@@ -146,6 +146,15 @@ npm start
 
 The AMI and ESL clients have no third party dependencies. Both protocols are just framed text over TCP, and hand rolling them keeps the install small and the behaviour predictable. The only runtime dependencies are the MCP SDK and Zod.
 
+## The protocol clients, on their own
+
+If you want to talk to a PBX from your own Node code and don't need MCP at all, the two clients underneath this server are published separately. Same protocol work, no MCP SDK, no Zod, nothing:
+
+- **[asterisk-ami-node](https://github.com/ictinnovations/asterisk-ami-node)** - Asterisk Manager Interface client. `npm install asterisk-ami-node`
+- **[freeswitch-esl-node](https://github.com/ictinnovations/freeswitch-esl-node)** - FreeSWITCH Event Socket client, inbound mode. `npm install freeswitch-esl-node`
+
+Both are zero dependency, TypeScript, ESM and CommonJS, Node 18 or newer, and tested against mock switches so you can run the suite without a PBX.
+
 ## Layout
 
 ```
@@ -175,6 +184,7 @@ ICT Innovations has shipped open source and commercial telephony since 2005. If 
 - **[ICTContact](https://ictcontact.com)** - contact center and unified communications
 - **[ICTDialer](https://ictdialer.com)** - auto and predictive dialer
 - **[ICTFax](https://ictfax.org)** - open source fax server
+- **[asterisk-ami-node](https://github.com/ictinnovations/asterisk-ami-node)** and **[freeswitch-esl-node](https://github.com/ictinnovations/freeswitch-esl-node)** - the protocol clients from this repo, published on their own
 
 Questions about the commercial products go through [the ICT Innovations support portal](https://service.ictinnovations.com/contact.php). Questions about pbx-mcp itself belong in GitHub issues, where everyone can read the answer.
 
