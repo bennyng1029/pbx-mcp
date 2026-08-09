@@ -12,6 +12,8 @@ Debugging a PBX means memorising two very different command sets. Asterisk speak
 
 pbx-mcp puts a single, well described tool surface in front of both, so your assistant can go from "calls are failing" to `sofia status gateway` without you spelling out each step.
 
+**New here?** The [User Guide](docs/USER-GUIDE.md) walks through PBX setup, client config, worked examples and troubleshooting. This README is the quick reference.
+
 ## Install
 
 ```bash
