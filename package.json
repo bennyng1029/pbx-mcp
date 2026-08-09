@@ -1,6 +1,7 @@
 {
   "name": "pbx-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "mcpName": "io.github.ictinnovations/pbx-mcp",
   "description": "Model Context Protocol server for Asterisk and FreeSWITCH. Lets AI assistants inspect channels, SIP registrations, trunk status and dialplan on a live PBX.",
   "type": "module",
   "bin": {
