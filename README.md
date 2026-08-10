@@ -1,5 +1,7 @@
 # pbx-mcp
 
+[![pbx-mcp MCP server](https://glama.ai/mcp/servers/ictinnovations/pbx-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ictinnovations/pbx-mcp)
+
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant inspect and control **Asterisk** and **FreeSWITCH**.
 
 Ask "which extensions are offline right now?" or "why is my SIP trunk not registering?" and get a real answer from the live switch, not a guess.
