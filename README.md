@@ -28,6 +28,28 @@ npx -y pbx-mcp
 
 You need Node 18 or newer.
 
+## Docker
+
+There's a prebuilt image if you'd rather not put Node on the machine that talks to your PBX.
+
+```bash
+docker run -i --rm \
+  -e ASTERISK_AMI_HOST=10.0.0.10 \
+  -e ASTERISK_AMI_USERNAME=mcp \
+  -e ASTERISK_AMI_PASSWORD=change-me \
+  ghcr.io/ictinnovations/pbx-mcp
+```
+
+The same image is on Docker Hub as [`ictinnovations/pbx-mcp`](https://hub.docker.com/r/ictinnovations/pbx-mcp) if that registry is an easier pull for you.
+
+Three things to know:
+
+- `-i` is not optional. The server speaks MCP over stdio, so without stdin attached the container starts and then sits there saying nothing, which looks exactly like a broken server.
+- There is no port to publish. Nothing listens.
+- Your PBX has to be reachable from inside the container. If Asterisk runs on the Docker host itself, swap the IP above for `host.docker.internal` on Mac and Windows, or add `--network host` on Linux.
+
+The image runs as a non-root user and, like every other way of running this, starts read only.
+
 ## Configure
 
 Everything comes from environment variables. Set the Asterisk block, the FreeSWITCH block, or both. The server only registers tools for what you've actually configured, so an Asterisk-only shop never sees a FreeSWITCH tool.
@@ -89,6 +111,32 @@ Add this to `claude_desktop_config.json`:
 ```
 
 The same shape works for any MCP client that speaks stdio. There's a copy in [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json).
+
+To run the container instead of npx, keep the `env` block and point `command` at Docker:
+
+```json
+{
+  "mcpServers": {
+    "pbx": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "ASTERISK_AMI_HOST",
+        "-e", "ASTERISK_AMI_USERNAME",
+        "-e", "ASTERISK_AMI_PASSWORD",
+        "ghcr.io/ictinnovations/pbx-mcp"
+      ],
+      "env": {
+        "ASTERISK_AMI_HOST": "10.0.0.10",
+        "ASTERISK_AMI_USERNAME": "mcp",
+        "ASTERISK_AMI_PASSWORD": "change-me"
+      }
+    }
+  }
+}
+```
+
+Each `-e NAME` with no value forwards that variable from `env` into the container, which keeps the secrets out of the argument list.
 
 ## Tools
 
