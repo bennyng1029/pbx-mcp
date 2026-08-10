@@ -1,0 +1,60 @@
+# Setting up Asterisk
+
+## Create an AMI user
+
+Open `/etc/asterisk/manager.conf` on the Asterisk box. Make sure the general
+section has the interface enabled:
+
+```ini
+[general]
+enabled = yes
+port = 5038
+bindaddr = 0.0.0.0
+```
+
+`bindaddr = 0.0.0.0` listens on every interface. If your PBX is exposed to the
+internet, use the specific internal IP instead, or leave it on `127.0.0.1` and
+use an SSH tunnel.
+
+Then add a user. Give it the least it needs:
+
+```ini
+[mcp]
+secret = pick-something-long
+deny = 0.0.0.0/0.0.0.0
+permit = 192.168.1.0/255.255.255.0
+read = system,call,command
+write = command
+```
+
+Change the `permit` line to the subnet your laptop is on. The `deny` line
+first, then `permit`, means "block everything except this."
+
+The permissions break down like this:
+
+| Permission | Why it's needed |
+|---|---|
+| `read = system` | Server status, uptime, version |
+| `read = call` | Live channel listings |
+| `read = command` | Reading CLI output |
+| `write = command` | Sending CLI commands at all |
+
+If you plan to turn on [call control](call-control.md) later, add `originate`
+to both the read and write lists. Don't add it yet.
+
+Reload and confirm:
+
+```bash
+asterisk -rx "manager reload"
+asterisk -rx "manager show users"
+```
+
+## Test the connection from your machine
+
+```bash
+telnet your-pbx-ip 5038
+```
+
+You should see `Asterisk Call Manager/8.0.0` or similar. If you see nothing,
+the port is closed or blocked, and no amount of config on your laptop will fix
+that. Press Ctrl+] then type `quit` to exit.

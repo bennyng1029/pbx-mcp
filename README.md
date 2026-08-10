@@ -1,6 +1,7 @@
 # pbx-mcp
 
 [![pbx-mcp MCP server](https://glama.ai/mcp/servers/ictinnovations/pbx-mcp/badges/score.svg)](https://glama.ai/mcp/servers/ictinnovations/pbx-mcp)
+[![Documentation Status](https://app.readthedocs.org/projects/pbx-mcp/badge/?version=latest)](https://pbx-mcp.readthedocs.io/en/latest/)
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant inspect and control **Asterisk** and **FreeSWITCH**.
 
@@ -14,7 +15,7 @@ Debugging a PBX means memorising two very different command sets. Asterisk speak
 
 pbx-mcp puts a single, well described tool surface in front of both, so your assistant can go from "calls are failing" to `sofia status gateway` without you spelling out each step.
 
-**New here?** The [User Guide](docs/USER-GUIDE.md) walks through PBX setup, client config, worked examples and troubleshooting. This README is the quick reference.
+**New here?** The [user guide](https://pbx-mcp.readthedocs.io/en/latest/) walks through PBX setup, client config, worked examples and troubleshooting. This README is the quick reference.
 
 ## Install
 

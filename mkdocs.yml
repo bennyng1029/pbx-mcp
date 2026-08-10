@@ -1,0 +1,79 @@
+site_name: pbx-mcp
+site_description: >-
+  pbx-mcp is an MCP server that lets an AI assistant inspect and control a live
+  Asterisk or FreeSWITCH system over AMI and ESL.
+site_url: https://pbx-mcp.readthedocs.io/
+repo_url: https://github.com/ictinnovations/pbx-mcp
+repo_name: ictinnovations/pbx-mcp
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; ICT Innovations. Released under the MIT licence.
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.action.edit
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ictinnovations/pbx-mcp
+      name: pbx-mcp on GitHub
+    - icon: fontawesome/brands/npm
+      link: https://www.npmjs.com/package/pbx-mcp
+      name: pbx-mcp on npm
+
+nav:
+  - Home: index.md
+  - Setup:
+      - Before you start: before-you-start.md
+      - Setting up Asterisk: asterisk.md
+      - Setting up FreeSWITCH: freeswitch.md
+      - Connecting your MCP client: mcp-client.md
+  - Using it:
+      - Your first questions: first-questions.md
+      - The tools, one by one: tools.md
+      - Turning on call control: call-control.md
+  - Reference:
+      - Troubleshooting: troubleshooting.md
+      - Security notes: security.md
