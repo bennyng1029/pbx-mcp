@@ -17,6 +17,14 @@ pbx-mcp puts a single, well described tool surface in front of both, so your ass
 
 **New here?** The [user guide](https://pbx-mcp.readthedocs.io/en/latest/) walks through PBX setup, client config, worked examples and troubleshooting. This README is the quick reference.
 
+## What your assistant sees
+
+Twelve read-only tools, six per engine, each one described well enough that the model picks the right one without being told. This is the server running under the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+
+![pbx-mcp tools listed in the MCP Inspector](https://raw.githubusercontent.com/ictinnovations/pbx-mcp/main/docs/images/mcp-inspector-tools.png)
+
+The four write tools, `asterisk_originate`, `asterisk_hangup`, `freeswitch_originate` and `freeswitch_hangup`, stay hidden until you set `PBX_MCP_ALLOW_WRITE=true`.
+
 ## Install
 
 ```bash
