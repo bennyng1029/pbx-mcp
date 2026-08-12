@@ -171,9 +171,9 @@ Each `-e NAME` with no value forwards that variable from `env` into the containe
 
 A PBX is not a scratch pad. Reloading a profile drops registrations, and an originate spends real money on a live trunk. So the default posture is read-only and the guards are layered:
 
-**Read-only by default.** `asterisk_cli` accepts an allow list of inspection prefixes (`core show`, `pjsip show`, `dialplan show`, `queue show` and friends). `freeswitch_api` accepts an allow list of inspection verbs (`status`, `show`, `sofia`, `version` and friends).
+**Read-only by default.** `asterisk_cli` accepts an allow list of inspection prefixes (`core show`, `pjsip show`, `dialplan show`, `queue show` and friends). `freeswitch_api` accepts the same kind of list (`status`, `show`, `sofia status`, `db list` and friends), matched on the start of the command so the subcommand counts.
 
-**Word level scanning on FreeSWITCH.** `sofia` is allow listed, but `sofia profile internal restart` is not a read. Every word in the command is checked against a list of state changing verbs, so the destructive tail gets caught even when the leading verb looks harmless.
+**The FreeSWITCH list allows subcommands, it does not deny scary words.** `sofia status` reads, `sofia profile internal restart` isn't on the list, so it's refused. This used to work the other way around, scanning each word against a list of state changing verbs, and that only ever catches the words somebody thought of. `conference 3001 kick all` walked straight through it. Reported by `Electrical-Place-458` on r/mcp.
 
 **Write tools aren't registered at all in read-only mode.** `asterisk_originate` and the other three never appear in `tools/list` unless you set `PBX_MCP_ALLOW_WRITE=true`. A model can't call a tool it can't see.
 

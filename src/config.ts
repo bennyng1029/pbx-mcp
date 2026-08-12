@@ -87,47 +87,38 @@ export const ASTERISK_READ_PREFIXES = [
 ];
 
 /**
- * FreeSWITCH API commands allowed in read-only mode. FreeSWITCH commands are a
- * single verb plus arguments, so the first word is what gets checked.
+ * FreeSWITCH API commands the server will run in read-only mode, matched on the
+ * start of the command the same way the Asterisk list is.
+ *
+ * Listing whole verbs does not work here. "sofia" and "db" own both readers and
+ * writers, so the subcommand is the part that decides, and an earlier version of
+ * this file tried to cover that by rejecting any command containing a word like
+ * "restart". A deny list only catches the words somebody thought of: "conference
+ * 3001 kick all" passed, because "kick" was never on it.
  */
-export const FREESWITCH_READ_COMMANDS = [
+export const FREESWITCH_READ_PREFIXES = [
   "status",
-  "show",
-  "sofia",
   "version",
   "uptime",
-  "global_getvar",
   "help",
+  "show",
   "list_users",
-  "conference",
-  "fsctl",
+  "global_getvar",
+  "module_exists",
   "regex",
   "strftime",
-  "module_exists",
-  "db",
+  "sofia status",
+  "sofia xmlstatus",
+  "db list",
+  "db exists",
+  "db select",
 ];
 
-/** Verbs that change call state or configuration. Never allowed without write mode. */
-const DESTRUCTIVE_HINTS = [
-  "reload",
-  "restart",
-  "shutdown",
-  "unload",
-  "load",
-  "originate",
-  "hangup",
-  "kill",
-  "uuid_kill",
-  "set",
-  "setvar",
-  "delete",
-  "del",
-  "put",
-  "flush",
-  "reset",
-  "stop",
-  "start",
-];
+/**
+ * conference puts the room name before the subcommand, so no prefix can express
+ * it: "conference 3001 list" reads and "conference 3001 kick all" does not.
+ */
+export const CONFERENCE_READ_SUBCOMMANDS = ["list", "xml_list", "count"];
 
 export interface PolicyResult {
   allowed: boolean;
@@ -164,29 +155,26 @@ export function checkFreeswitchCommand(command: string, allowWrite: boolean): Po
     return { allowed: false, reason: "Command contains shell metacharacters." };
   }
 
-  const verb = trimmed.split(/\s+/)[0].toLowerCase();
   if (allowWrite) return { allowed: true };
 
-  if (!FREESWITCH_READ_COMMANDS.includes(verb)) {
-    return {
-      allowed: false,
-      reason:
-        `"${verb}" is not on the read-only allow list. ` +
-        `Set PBX_MCP_ALLOW_WRITE=true to permit arbitrary API commands.`,
-    };
+  const words = trimmed.toLowerCase().replace(/\s+/g, " ").split(" ");
+  const refuse = (what: string): PolicyResult => ({
+    allowed: false,
+    reason:
+      `"${what}" is not on the read-only allow list. ` +
+      `Set PBX_MCP_ALLOW_WRITE=true to permit arbitrary API commands.`,
+  });
+
+  if (words[0] === "conference") {
+    // "conference list" with no room name lists every conference.
+    const sub = words.length > 2 ? words[2] : words[1];
+    if (sub && CONFERENCE_READ_SUBCOMMANDS.includes(sub)) return { allowed: true };
+    return refuse(sub ? `conference ... ${sub}` : "conference");
   }
 
-  // "sofia profile internal restart" is read-prefixed but not a read.
-  const words = trimmed.toLowerCase().split(/\s+/);
-  const destructive = words.find((w) => DESTRUCTIVE_HINTS.includes(w));
-  if (destructive) {
-    return {
-      allowed: false,
-      reason: `"${destructive}" changes state and needs PBX_MCP_ALLOW_WRITE=true.`,
-    };
-  }
-
-  return { allowed: true };
+  const cmd = words.join(" ");
+  const readOnly = FREESWITCH_READ_PREFIXES.some((p) => cmd === p || cmd.startsWith(p + " "));
+  return readOnly ? { allowed: true } : refuse(cmd);
 }
 
 /** Reject anything that could inject extra AMI headers through a field value. */
