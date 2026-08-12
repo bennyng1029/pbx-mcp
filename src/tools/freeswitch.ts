@@ -141,6 +141,53 @@ export function registerFreeswitchTools(server: McpServer, cfg: Config, getClien
     }
   );
 
+  server.registerTool(
+    "freeswitch_hangup_preview",
+    {
+      title: "Preview what a hangup would drop",
+      description:
+        "Show which live call legs a hangup would affect, without touching them. Takes the same " +
+        "UUID argument as freeswitch_hangup and reports the matching channel plus the leg it is " +
+        "bridged to, so you can see the blast radius first. Always available, including in " +
+        "read-only mode.",
+      inputSchema: {
+        uuid: z.string().describe("Channel UUID, or part of one, as reported by freeswitch_channels."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ uuid }) => {
+      try {
+        if (!/^[0-9a-f-]{4,64}$/i.test(uuid)) return text("That does not look like a channel UUID.", true);
+
+        const esl = await getClient();
+        const out = await esl.api("show channels");
+        const lines = out.split("\n");
+        const needle = uuid.toLowerCase();
+        const matched = lines.slice(1).filter((l) => l.toLowerCase().includes(needle));
+
+        if (!matched.length) {
+          return text(
+            `Nothing matches "${uuid}". No leg would be dropped, and freeswitch_hangup would return ` +
+              `-ERR No such channel.`
+          );
+        }
+
+        return text(
+          [
+            `Would be dropped by freeswitch_hangup("${uuid}"):`,
+            clamp([lines[0], ...matched].join("\n")),
+            matched.length > 1
+              ? `${matched.length} legs match that string. freeswitch_hangup takes one full UUID, so ` +
+                `check which one you mean before running it.`
+              : "If this leg is bridged, the far end drops with it. The call_uuid column tells you.",
+          ].join("\n\n")
+        );
+      } catch (err) {
+        return toolError(err);
+      }
+    }
+  );
+
   if (!write) return;
 
   server.registerTool(

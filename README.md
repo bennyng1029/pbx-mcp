@@ -152,6 +152,7 @@ Each `-e NAME` with no value forwards that variable from `env` into the containe
 | `asterisk_endpoints` | PJSIP endpoints with device state and contact count. Falls back to `chan_sip` peers on older installs |
 | `asterisk_dialplan` | Dumps a context, or one extension inside a context |
 | `asterisk_cli` | Any CLI command, subject to the safety policy below |
+| `asterisk_hangup_preview` | Shows which live channels a hangup would drop, without dropping them |
 | `asterisk_originate` | Places a call. Write mode only |
 | `asterisk_hangup` | Kills a channel by name. Write mode only |
 
@@ -164,6 +165,7 @@ Each `-e NAME` with no value forwards that variable from `env` into the containe
 | `freeswitch_registrations` | Registered users on a Sofia profile, with contact URI, user agent and expiry |
 | `freeswitch_sofia_status` | Every SIP profile and gateway, including whether trunks are registered upstream |
 | `freeswitch_api` | Any API command, subject to the safety policy below |
+| `freeswitch_hangup_preview` | Shows which live legs a hangup would drop, without dropping them |
 | `freeswitch_originate` | Places a call. Write mode only |
 | `freeswitch_hangup` | `uuid_kill` on a channel UUID. Write mode only |
 
@@ -176,6 +178,8 @@ A PBX is not a scratch pad. Reloading a profile drops registrations, and an orig
 **The FreeSWITCH list allows subcommands, it does not deny scary words.** `sofia status` reads, `sofia profile internal restart` isn't on the list, so it's refused. This used to work the other way around, scanning each word against a list of state changing verbs, and that only ever catches the words somebody thought of. `conference 3001 kick all` walked straight through it. Reported by `Electrical-Place-458` on r/mcp.
 
 **Write tools aren't registered at all in read-only mode.** `asterisk_originate` and the other three never appear in `tools/list` unless you set `PBX_MCP_ALLOW_WRITE=true`. A model can't call a tool it can't see.
+
+**The hangup preview tools are always available.** `asterisk_hangup_preview` and `freeswitch_hangup_preview` show which live channels a hangup would drop without touching them, so you can see the blast radius before setting the write flag, or catch a typo in a channel name before running the real thing. They're read-only by contract but exercise the same matching the write path uses.
 
 **Shell metacharacters are rejected** on both transports before a command is sent.
 

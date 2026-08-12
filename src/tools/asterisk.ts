@@ -206,6 +206,74 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
     }
   );
 
+  server.registerTool(
+    "asterisk_hangup_preview",
+    {
+      title: "Preview what a hangup would drop",
+      description:
+        "Show which live channels a hangup would affect, without touching them. Takes the same " +
+        "channel argument as asterisk_hangup and reports the exact match plus any near misses, " +
+        "so you can see the blast radius before dropping a call. Always available, including in " +
+        "read-only mode.",
+      inputSchema: {
+        channel: z.string().describe("Channel name, exact or partial, for example 'PJSIP/1001-0000000a' or just '1001'."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ channel }) => {
+      try {
+        assertNoHeaderInjection("channel", channel);
+
+        const ami = await getClient();
+        const rows = listRows(await ami.action({ Action: "CoreShowChannels" }), "CoreShowChannel");
+        const needle = channel.toLowerCase();
+        const exact = rows.filter((r) => (r.Channel ?? "").toLowerCase() === needle);
+        const partial = rows.filter(
+          (r) => (r.Channel ?? "").toLowerCase().includes(needle) && (r.Channel ?? "").toLowerCase() !== needle
+        );
+
+        if (!exact.length && !partial.length) {
+          return text(
+            `Nothing matches "${channel}". No channel would be dropped, and asterisk_hangup would ` +
+              `report "No such channel".`
+          );
+        }
+
+        const describe = (label: string, matched: typeof rows) =>
+          `${label}\n` +
+          asTable(matched, [
+            ["Channel", "Channel"],
+            ["State", "ChannelStateDesc"],
+            ["CallerID", "CallerIDNum"],
+            ["Connected", "ConnectedLineNum"],
+            ["Duration", "Duration"],
+            ["Bridge", "BridgeId"],
+          ]);
+
+        const out: string[] = [];
+        if (exact.length) {
+          out.push(describe(`Would be dropped by asterisk_hangup("${channel}"):`, exact));
+          const bridged = exact.filter((r) => r.BridgeId);
+          if (bridged.length) {
+            out.push(
+              "That channel is bridged, so the party on the other side gets hung up with it."
+            );
+          }
+        } else {
+          out.push(
+            `No exact match, so asterisk_hangup("${channel}") would drop nothing. ` +
+              `asterisk_hangup needs the full channel name.`
+          );
+        }
+        if (partial.length) out.push(describe("Channels containing that string:", partial));
+
+        return text(out.join("\n\n"));
+      } catch (err) {
+        return toolError(err);
+      }
+    }
+  );
+
   if (!write) return;
 
   server.registerTool(
