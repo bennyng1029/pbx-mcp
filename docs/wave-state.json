@@ -1,0 +1,69 @@
+{
+ "slug": "multi-target",
+ "plan": "docs/plans/multi-target.md",
+ "created": "2026-10-03T17:21:04",
+ "tasks": {
+  "0": {
+   "title": "Baseline live verification of the shipped functions",
+   "deps": [],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "1": {
+   "title": "AMI reliability: shared connect, login-gated ready, bounded calls, no false empties",
+   "deps": [
+    "0"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "2": {
+   "title": "Targets: file loader, registry, select/list/get tools, read-only enforcement",
+   "deps": [
+    "1"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "3": {
+   "title": "Per-target provisioning gates and target binding",
+   "deps": [
+    "2"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "4": {
+   "title": "Observability: identity in status, Call-ID/From/To/Diversion in channels",
+   "deps": [
+    "2"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "5": {
+   "title": "Documentation and operator setup",
+   "deps": [
+    "3",
+    "4"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  },
+  "6": {
+   "title": "Final live verification of every function",
+   "deps": [
+    "5"
+   ],
+   "status": "pending",
+   "updated": "2026-10-03T17:21:04",
+   "note": ""
+  }
+ }
+}
