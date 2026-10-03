@@ -26,3 +26,7 @@ All carry-forward items CF-001 through CF-008 have been resolved:
 - **CF-007**: AMI Error responses returned as tool errors (`isError: true`) for `originate` and `hangup`.
 - **CF-008**: Added 1 MB buffer limit (`MAX_AMI_BUFFER`) and 128-char cap + sanitization on channel cells.
 Test suite: 127 pass, 2 opt-in skipped.
+
+## Lab port change (2026-10-03)
+
+The lab Asterisk (`asterisk-dev` on 192.168.10.244) moved its SIP listeners off 5060 to avoid a clash with another container on the host: 6060/udp, 6060/tcp and 6061/tls (self-signed certificate). AMI stays on 5038. Integration tests against it need `PBX_MCP_IT_SIP_PORT=6060`; sipclient-mcp UAs must register to 6060 (6061 for TLS).
