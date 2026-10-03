@@ -4,7 +4,7 @@ HEAD 0182ad2 (dist built from it). Lab Asterisk 192.168.10.244 (certified-22.8-c
 
 ## Root causes found
 
-1. **Lab AMI user `mcp` has `read perm: system,call,command` and `write perm: command,config,originate`** (`manager show user mcp`). `CoreShowChannels`, `PJSIPShowEndpoints` and `CoreStatus` need `reporting` (read); `Hangup` needs `call` (write). Raw AMI check with a fully logged-in client: all three read actions return `Response: Error / Permission denied`. The current code renders that as an empty list, hence the false empties below. This is a lab configuration precondition for Task 4/6 live rows, not a code defect; the code defect is that the error is hidden.
+1. **Lab AMI user `mcp` has `read perm: system,call,command` and `write perm: command,config,originate`** (`manager show user mcp`). AMI actions are authorised by the *write* permission, so `CoreShowChannels`, `PJSIPShowEndpoints`, `CoreStatus` (need `system`+`reporting`), `Hangup` (needs `call`) and `Getvar` (needs `call`+`reporting`) are denied. Raw AMI check with a fully logged-in client: all three read actions return `Response: Error / Permission denied`. The current code renders that as an empty list, hence the false empties below. This is a lab configuration precondition for Task 4/6 live rows, not a code defect; the code defect is that the error is hidden.
 2. **Cold-start race** (Task 1 scope): confirmed live.
 
 ## Matrix
@@ -33,6 +33,6 @@ HEAD 0182ad2 (dist built from it). Lab Asterisk 192.168.10.244 (certified-22.8-c
 
 ## Owner action needed before Task 4 and Task 6 live rows can pass
 
-Add `reporting` to the `mcp` AMI user's read perm and `call` to its write perm in the lab `manager.conf`, then `manager reload`. Without it the new code will (correctly) report "Permission denied" for channels, endpoints and hangup, and the live Call-ID and hangup rows cannot pass. Alternatively accept those rows as BLOCKED with the reason.
+Set the `mcp` AMI user's `write` in the lab `manager.conf` to `system,call,reporting,command,config,originate` (adding `system`, `call`, `reporting`), then `manager reload`. Without it the new code will (correctly) report "Permission denied" for channels, endpoints and hangup, and the live Call-ID and hangup rows cannot pass. Alternatively accept those rows as BLOCKED with the reason.
 
 Code baseline: `npm test` before any change: see `.wave-baseline.json`.

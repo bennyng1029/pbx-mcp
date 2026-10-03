@@ -42,9 +42,9 @@
    "deps": [
     "2"
    ],
-   "status": "pending",
-   "updated": "2026-10-03T17:21:04",
-   "note": ""
+   "status": "done",
+   "updated": "2026-10-03T17:47:09",
+   "note": "lint+tests ok"
   },
   "5": {
    "title": "Documentation and operator setup",

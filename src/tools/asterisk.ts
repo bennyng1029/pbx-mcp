@@ -16,8 +16,55 @@ export interface ToolTarget {
   readOnly: boolean;
   getClient: () => Promise<AmiClient>;
   name?: string;
+  label?: string;
   host?: string;
   port?: number;
+  dialplanHint?: string;
+}
+
+/** Channel columns that need one Getvar each (PJSIP channels only); Asterisk answers with the SIP header or id. */
+const CHANNEL_VARS: Array<[string, string]> = [
+  ["Call-ID", "CHANNEL(pjsip,call-id)"],
+  ["From", "PJSIP_HEADER(read,From)"],
+  ["To", "PJSIP_HEADER(read,To)"],
+  ["Diversion", "PJSIP_HEADER(read,Diversion)"],
+];
+const ENRICH_CHANNELS = 20;
+const ENRICH_CONCURRENCY = 8;
+
+/**
+ * Fill Call-ID/From/To/Diversion on the first channels. Every failure (Getvar refused, no such
+ * header, not a PJSIP channel, budget spent) leaves that cell unset, so it renders as n/a; this
+ * never fails the tool. One extra timeoutMs budget is shared by all lookups.
+ */
+async function enrichChannels(ami: AmiClient, rows: AmiMessage[], budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  let spent = false;
+  const jobs: Array<() => Promise<void>> = [];
+  for (const row of rows.slice(0, ENRICH_CHANNELS)) {
+    if (!(row.Channel ?? "").startsWith("PJSIP/")) continue;
+    for (const [column, variable] of CHANNEL_VARS) {
+      jobs.push(async () => {
+        const left = deadline - Date.now();
+        if (left <= 0) {
+          spent = true;
+          return;
+        }
+        try {
+          const res = (await ami.action({ Action: "Getvar", Channel: row.Channel, Variable: variable }, left))[0] ?? {};
+          if ((res.Response ?? "").toLowerCase() === "success" && res.Value?.trim()) row[column] = res.Value.trim();
+        } catch {
+          // Rendered as n/a; a lookup cut short by the shared budget is reported in a note.
+          if (Date.now() >= deadline - 5) spent = true;
+        }
+      });
+    }
+  }
+  const queue = [...jobs];
+  await Promise.all(Array.from({ length: ENRICH_CONCURRENCY }, async () => {
+    for (let job = queue.shift(); job; job = queue.shift()) await job();
+  }));
+  return spent;
 }
 
 /**
@@ -54,7 +101,21 @@ export function registerAsteriskTools(
           ami.command("core show version"),
         ]);
         const calls = await ami.command("core show calls");
-        const header = target.name ? `Target: ${target.name} (${target.host}:${target.port})\n` : "";
+        let header = "";
+        if (target.name) {
+          header = `Target: ${target.name} (${target.host}:${target.port})\n`;
+          if (target.label && target.label !== target.name) header += `Label: ${target.label}\n`;
+          try {
+            const settings = await ami.command("core show settings");
+            const file = /^Configuration file:\s*(.+)$/m.exec(settings)?.[1];
+            const uuid = /^PBX UUID:\s*(.+)$/m.exec(settings)?.[1];
+            if (file) header += `Config file: ${file.trim()}\n`;
+            if (uuid) header += `PBX UUID: ${uuid.trim()}\n`;
+          } catch {
+            /* identity extras are best effort */
+          }
+          if (target.dialplanHint) header += `Dialplan hint: ${target.dialplanHint}\n`;
+        }
         return text(header + ([version, status, calls].filter(Boolean).join("\n").trim() || "No output from Asterisk."));
       } catch (err) {
         return toolError(err);
@@ -90,8 +151,14 @@ export function registerAsteriskTools(
 
         if (!rows.length) return text(filter ? `No active channels match "${filter}".` : "No active channels.");
 
+        const budgetSpent = await enrichChannels(ami, rows, cfg.timeoutMs);
+        const notes = [`${rows.length} active channel(s).`];
+        if (rows.length > ENRICH_CHANNELS) notes.push(`Call-ID, From, To and Diversion are looked up for the first ${ENRICH_CHANNELS} channels only.`);
+        if (budgetSpent) notes.push("Header lookups stopped at the time budget; remaining cells show n/a.");
+
+        const na = (r: AmiMessage, k: string) => ({ ...r, [k]: r[k] ?? "n/a" });
         return text(
-          asTable(rows, [
+          asTable(rows.map((r) => CHANNEL_VARS.reduce((acc, [c]) => na(acc, c), r)), [
             ["Channel", "Channel"],
             ["State", "ChannelStateDesc"],
             ["CallerID", "CallerIDNum"],
@@ -100,7 +167,11 @@ export function registerAsteriskTools(
             ["Exten", "Exten"],
             ["Duration", "Duration"],
             ["Bridge", "BridgeId"],
-          ]) + `\n\n${rows.length} active channel(s).`
+            ["Call-ID", "Call-ID"],
+            ["From", "From"],
+            ["To", "To"],
+            ["Diversion", "Diversion"],
+          ]) + `\n\n${notes.join("\n")}`
         );
       } catch (err) {
         return toolError(err);
@@ -183,7 +254,8 @@ export function registerAsteriskTools(
       title: "Show dialplan",
       description:
         "Dump the dialplan for a context, or for one extension within a context. " +
-        "Useful for tracing where a call would go before placing it.",
+        "Useful for tracing where a call would go before placing it. To trace a dialed number or DID, " +
+        "pass it as extension; the target's dialplan hint (shown by asterisk_status) says where DIDs are routed.",
       inputSchema: {
         context: z.string().describe("Dialplan context, for example 'from-internal' or 'default'."),
         extension: z.string().optional().describe("Optional single extension to narrow the output."),

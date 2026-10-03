@@ -147,6 +147,7 @@ export async function startMockAmi(seed = {}) {
           return cli(found ? `Endpoint:  ${m[1]}\nAor:  ${m[1]}` : `Unable to find object ${m[1]}.`);
         }
         if (c === "core show uptime") return cli("System uptime: 1 minute\nLast reload: 1 minute");
+        if (c === "core show settings") return state.settingsError ? err("Permission denied") : cli("Version: mock\nConfiguration file:          /etc/asterisk/asterisk.conf\nPBX UUID:                    8d3bd6cc-0000-0000-0000-000000000001");
         if (c === "core show version") return cli("Asterisk mock 22.0.0");
         if (c === "core show calls") return cli("0 active calls\n0 calls processed");
         return err(`No such command '${c}'`);
