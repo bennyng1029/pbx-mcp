@@ -16,14 +16,24 @@ import { loadConfig } from "./config.js";
 import { lazyClient } from "./lazy-client.js";
 import { registerAsteriskTools } from "./tools/asterisk.js";
 import { registerProvisioningTools } from "./tools/provision.js";
+import { registerTargetTools } from "./tools/targets.js";
+import { createRegistry } from "./targets.js";
 import { registerFreeswitchTools } from "./tools/freeswitch.js";
 
 const cfg = loadConfig();
 
-if (!cfg.asterisk && !cfg.freeswitch) {
+let registry: ReturnType<typeof createRegistry> | undefined;
+try {
+  registry = createRegistry(cfg);
+} catch (err) {
+  console.error(`pbx-mcp: ${(err as Error).message}`);
+  process.exit(1);
+}
+
+if (!registry.active && !cfg.freeswitch) {
   console.error(
     "pbx-mcp: no PBX configured.\n" +
-      "Set ASTERISK_AMI_HOST for Asterisk, FREESWITCH_ESL_HOST for FreeSWITCH, or both.\n" +
+      "Set ASTERISK_AMI_HOST (or PBX_MCP_TARGETS_FILE) for Asterisk, FREESWITCH_ESL_HOST for FreeSWITCH, or both.\n" +
       "See https://github.com/ictinnovations/pbx-mcp for the full variable list."
   );
   process.exit(1);
@@ -41,14 +51,17 @@ const server = new McpServer(
   }
 );
 
-if (cfg.asterisk) {
-  const ami = cfg.asterisk;
-  const getAmi = lazyClient(
-    () => new AmiClient({ ...ami, timeoutMs: cfg.timeoutMs }),
-    (c) => c.isConnected
-  );
-  registerAsteriskTools(server, cfg, getAmi);
-  if (cfg.allowProvision) registerProvisioningTools(server, cfg, getAmi);
+if (registry.active) {
+  registerAsteriskTools(server, cfg, registry.getClient, () => registry.snapshot());
+  if (cfg.allowProvision) {
+    // Provisioning writes, so it never runs against a read-only (for example ad hoc) target.
+    registerProvisioningTools(server, cfg, async () => {
+      const target = registry.snapshot();
+      if (target.readOnly) throw new Error(`Target "${target.name}" is read-only; provisioning refused.`);
+      return target.getClient();
+    });
+  }
+  if (cfg.targetsFile || cfg.hostAllow.length) registerTargetTools(server, registry);
 }
 
 if (cfg.freeswitch) {
@@ -67,6 +80,6 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 console.error(
-  `pbx-mcp ready (${[cfg.asterisk && "Asterisk", cfg.freeswitch && "FreeSWITCH"].filter(Boolean).join(" + ")}, ` +
+  `pbx-mcp ready (${[registry.active && "Asterisk", cfg.freeswitch && "FreeSWITCH"].filter(Boolean).join(" + ")}, ` +
     `${cfg.allowWrite ? "write enabled" : "read-only"}). ICT Innovations, https://ictinnovations.com`
 );

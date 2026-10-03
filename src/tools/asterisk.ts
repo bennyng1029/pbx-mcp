@@ -11,8 +11,29 @@ import { AmiClient, AmiError, listRows, type AmiMessage } from "../ami.js";
 import { assertNoHeaderInjection, checkAsteriskCommand, type Config } from "../config.js";
 import { asTable, text, toolError } from "./format.js";
 
-export function registerAsteriskTools(server: McpServer, cfg: Config, getClient: () => Promise<AmiClient>) {
+/** What a tool needs to know about its target; a registry Snapshot satisfies it. */
+export interface ToolTarget {
+  readOnly: boolean;
+  getClient: () => Promise<AmiClient>;
+  name?: string;
+  host?: string;
+  port?: number;
+}
+
+/**
+ * `getSnapshot` is read once at tool entry by every write and by status, so a target change
+ * between the permission check and the AMI call cannot redirect a write. Omitted, it is the
+ * single-target behaviour: writable, using `getClient`.
+ */
+export function registerAsteriskTools(
+  server: McpServer,
+  cfg: Config,
+  getClient: () => Promise<AmiClient>,
+  getSnapshot: () => ToolTarget = () => ({ readOnly: false, getClient })
+) {
   const write = cfg.allowWrite;
+  const refuseReadOnly = (t: ToolTarget) =>
+    text(`Refused. Target "${t.name}" (${t.host}:${t.port}) is read-only; no write was sent.`, true);
 
   server.registerTool(
     "asterisk_status",
@@ -26,13 +47,15 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
     },
     async () => {
       try {
-        const ami = await getClient();
+        const target = getSnapshot();
+        const ami = await target.getClient();
         const [status, version] = await Promise.all([
           ami.command("core show uptime"),
           ami.command("core show version"),
         ]);
         const calls = await ami.command("core show calls");
-        return text([version, status, calls].filter(Boolean).join("\n").trim() || "No output from Asterisk.");
+        const header = target.name ? `Target: ${target.name} (${target.host}:${target.port})\n` : "";
+        return text(header + ([version, status, calls].filter(Boolean).join("\n").trim() || "No output from Asterisk."));
       } catch (err) {
         return toolError(err);
       }
@@ -199,10 +222,11 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
     },
     async ({ command }) => {
       try {
-        const policy = checkAsteriskCommand(command, write);
-        if (!policy.allowed) return text(`Refused. ${policy.reason}`, true);
+        const target = getSnapshot();
+        const policy = checkAsteriskCommand(command, write && !target.readOnly);
+        if (!policy.allowed) return write && target.readOnly ? refuseReadOnly(target) : text(`Refused. ${policy.reason}`, true);
 
-        const ami = await getClient();
+        const ami = await target.getClient();
         const out = await ami.command(command);
         return text(out.trim() || "(command produced no output)");
       } catch (err) {
@@ -299,11 +323,13 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
     },
     async ({ channel, extension, context, callerId, timeoutSeconds }) => {
       try {
+        const target = getSnapshot();
+        if (target.readOnly) return refuseReadOnly(target);
         for (const [label, value] of Object.entries({ channel, extension, context, callerId: callerId ?? "" })) {
           assertNoHeaderInjection(label, value);
         }
 
-        const ami = await getClient();
+        const ami = await target.getClient();
         const fields: Record<string, string> = {
           Action: "Originate",
           Channel: channel,
@@ -341,8 +367,10 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
     },
     async ({ channel }) => {
       try {
+        const target = getSnapshot();
+        if (target.readOnly) return refuseReadOnly(target);
         assertNoHeaderInjection("channel", channel);
-        const ami = await getClient();
+        const ami = await target.getClient();
         const res = await ami.action({ Action: "Hangup", Channel: channel });
         const first = res[0] ?? {};
         return text(`${first.Response ?? "Unknown"}: ${first.Message ?? `Hangup requested for ${channel}.`}`);

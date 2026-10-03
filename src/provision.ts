@@ -259,6 +259,13 @@ function parseCategories(msgs: AmiMessage[]): Cat[] {
 const find = (cats: Cat[], name: string, type: string) =>
   cats.find((c) => c.name === name && get(c.vars, "type") === type);
 
+/** pjsip.conf is hand-maintained; provisioning is confined to one include file beside it. */
+export function assertPjsipFile(file: string): void {
+  if (!/^[A-Za-z0-9_.-]+\.conf$/.test(file) || file.toLowerCase() === "pjsip.conf") {
+    throw new Error(`PBX_MCP_PJSIP_FILE "${file}" must be a bare *.conf file name other than pjsip.conf.`);
+  }
+}
+
 export class Provisioner {
   /** UpdateConfig is read-modify-write, so provisioning operations run one at a time. */
   private tail: Promise<unknown> = Promise.resolve();
@@ -267,10 +274,7 @@ export class Provisioner {
     private getClient: () => Promise<AmiClient>,
     private opts: ProvisionOptions
   ) {
-    // pjsip.conf is hand-maintained; provisioning is confined to one include file beside it.
-    if (!/^[A-Za-z0-9_.-]+\.conf$/.test(opts.file) || opts.file.toLowerCase() === "pjsip.conf") {
-      throw new Error(`PBX_MCP_PJSIP_FILE "${opts.file}" must be a bare *.conf file name other than pjsip.conf.`);
-    }
+    assertPjsipFile(opts.file);
   }
 
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
