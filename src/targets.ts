@@ -12,7 +12,7 @@ import { z } from "zod";
 import { AmiClient } from "./ami.js";
 import type { Config } from "./config.js";
 import { lazyClient } from "./lazy-client.js";
-import { assertPjsipFile } from "./provision.js";
+import { assertPjsipFile, Provisioner } from "./provision.js";
 
 export const NO_TARGET = "no_target_selected";
 const DEFAULT = "default";
@@ -195,6 +195,8 @@ export class TargetRegistry {
   private adhoc?: Held;
   private selected?: Held;
   private allow: net.BlockList;
+  /** One Provisioner per provisioning-enabled named target, keeping that target's write queue. */
+  private provisioners = new Map<string, Provisioner>();
 
   constructor(
     entries: TargetEntry[],
@@ -204,7 +206,14 @@ export class TargetRegistry {
       throw new Error("PBX_MCP_ADHOC_PORTS must be a comma-separated list of ports (1-65535).");
     }
     this.allow = hostAllowList(opts.hostAllow);
-    for (const e of entries) this.named.set(e.name, this.hold(e, false));
+    for (const e of entries) {
+      const held = this.hold(e, false);
+      this.named.set(e.name, held);
+      // Bound to this target's own client and gates, whatever is selected later.
+      if (e.provision && !e.readOnly) {
+        this.provisioners.set(e.name, new Provisioner(held.get, { file: e.pjsipFile, trunkAllow: e.trunkAllow, contextAllow: e.contextAllow }));
+      }
+    }
     // A single named target needs no selection.
     if (this.named.size === 1) this.selected = [...this.named.values()][0];
   }
@@ -232,7 +241,12 @@ export class TargetRegistry {
   }
 
   list(): Array<Identity & { selected: boolean; provision: boolean }> {
-    return [...this.named.values()].map((h) => ({ ...this.identityOf(h), selected: this.selected === h, provision: h.entry.provision }));
+    return [...this.named.values()].map((h) => ({ ...this.identityOf(h), selected: this.selected === h, provision: this.provisioners.has(h.entry.name) }));
+  }
+
+  /** The provisioner for a named target; undefined for ad hoc, readOnly and provision:false targets. */
+  provisionerFor(name: string): Provisioner | undefined {
+    return this.provisioners.get(name);
   }
 
   /** Synchronous: the selection is assigned before the caller can interleave. */

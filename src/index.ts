@@ -53,14 +53,7 @@ const server = new McpServer(
 
 if (registry.active) {
   registerAsteriskTools(server, cfg, registry.getClient, () => registry.snapshot());
-  if (cfg.allowProvision) {
-    // Provisioning writes, so it never runs against a read-only (for example ad hoc) target.
-    registerProvisioningTools(server, cfg, async () => {
-      const target = registry.snapshot();
-      if (target.readOnly) throw new Error(`Target "${target.name}" is read-only; provisioning refused.`);
-      return target.getClient();
-    });
-  }
+  if (cfg.allowProvision) registerProvisioningTools(server, cfg, registry.getClient, registry);
   if (cfg.targetsFile || cfg.hostAllow.length) registerTargetTools(server, registry);
 }
 

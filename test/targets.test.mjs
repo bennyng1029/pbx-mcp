@@ -432,3 +432,183 @@ test("a start-up with only ASTERISK_AMI_HOST set still registers the previous to
   assert.ok(!names.some((t) => t.startsWith("pbx_")));
   assert.match(text(await s.call("asterisk_status")), /System uptime/);
 });
+
+// --- per-target provisioning gates and binding (Task 3) ---
+
+import { registerProvisioningTools } from "../dist/tools/provision.js";
+
+const PROV = { provision: true, trunkAllow: ["192.0.2.0/24"], contextAllow: ["mcp-test"] };
+const trunk = (o = {}) => ({ name: "t1", host: "192.0.2.10", context: "mcp-test", ...o });
+const ext = (o = {}) => ({ number: "1001", context: "mcp-test", ...o });
+const provServer = (extra = {}) => spawn({ PBX_MCP_ALLOW_PROVISION: "true", ...extra });
+const sections = (m) => m.categories.map((c) => c.name);
+const updates = (m) => m.actions("UpdateConfig");
+
+/** Provisioning tool handlers on a fake server, bound to a registry. */
+function provTools(r, cfg = { pjsipFile: "pjsip_mcp.conf", trunkAllow: [], contextAllow: [] }) {
+  const handlers = {};
+  registerProvisioningTools({ registerTool: (name, _d, fn) => (handlers[name] = fn) }, cfg, r?.getClient, r);
+  return handlers;
+}
+
+test("same trunk allowed on A, refused on B", async () => {
+  const a = await mock();
+  const b = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, PROV), b: entry(b, { ...PROV, trunkAllow: ["198.51.100.0/24"] }) } }) });
+  await s.call("pbx_select_target", { name: "a" });
+  const ok = await s.call("asterisk_trunk_create", { ...trunk(), target: "a" });
+  assert.match(text(ok), /Created and verified trunk mcp-t1/);
+  assert.ok(sections(a).includes("mcp-t1"));
+  await s.call("pbx_select_target", { name: "b" });
+  const no = await s.call("asterisk_trunk_create", { ...trunk(), target: "b" });
+  assert.equal(no.isError, true);
+  assert.match(text(no), /not on the PBX_MCP_TRUNK_ALLOW list/);
+  assert.equal(updates(b).length, 0);
+});
+
+test("file target without gates refuses provisioning", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TRUNK_ALLOW: "192.0.2.0/24", PBX_MCP_CONTEXT_ALLOW: "mcp-test", PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m) } }) });
+  const r = await s.call("asterisk_trunk_create", trunk());
+  assert.equal(r.isError, true);
+  assert.match(text(r), /Provisioning is not enabled for target "a"/);
+  assert.equal(m.actions().length, 0, "global allowlists do not apply to file targets");
+});
+
+test("readOnly named target refuses provisioning writes", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { ro: entry(m, { ...PROV, readOnly: true }) } }) });
+  const r = await s.call("asterisk_extension_create", ext());
+  assert.equal(r.isError, true);
+  assert.match(text(r), /not enabled/);
+  assert.equal(m.actions().length, 0);
+});
+
+test("each of the four mutators refuses on a readOnly named target", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { ro: entry(m, { ...PROV, readOnly: true }) } }) });
+  for (const [tool, args] of [["asterisk_trunk_create", trunk()], ["asterisk_trunk_delete", { name: "t1" }], ["asterisk_extension_create", ext()], ["asterisk_extension_delete", { number: "1001" }]]) {
+    const r = await s.call(tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(text(r), /not enabled/, tool);
+  }
+  assert.equal(m.actions().length, 0);
+});
+
+test("ad hoc target cannot provision and sends no AMI write", async () => {
+  const m = await mock();
+  const s = await provServer({ ...ADHOC(m), PBX_MCP_TRUNK_ALLOW: "192.0.2.0/24", PBX_MCP_CONTEXT_ALLOW: "mcp-test" });
+  await s.call("pbx_select_target", { host: "127.0.0.1", port: m.port });
+  for (const [tool, args] of [["asterisk_trunk_create", trunk()], ["asterisk_extension_create", ext()], ["asterisk_trunk_delete", { name: "t1" }], ["asterisk_extension_delete", { number: "1001" }]]) {
+    const r = await s.call(tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(text(r), /not enabled/, tool);
+  }
+  assert.equal(m.actions().length, 0);
+});
+
+test("result names the target", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m, PROV) } }) });
+  const ok = await s.call("asterisk_extension_create", ext());
+  assert.ok(text(ok).startsWith(`Target: a (127.0.0.1:${m.port})\n`), text(ok).slice(0, 80));
+  const bad = await s.call("asterisk_extension_create", ext({ context: "other" }));
+  assert.ok(text(bad).startsWith(`Target: a (`));
+  assert.ok(text(await s.call("asterisk_trunk_list")).startsWith("Target: a ("));
+});
+
+test("per-target pjsipFile is the file actually written", async () => {
+  const a = await mock();
+  const b = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, { ...PROV, pjsipFile: "a_lab.conf" }), b: entry(b, { ...PROV, pjsipFile: "b_lab.conf" }) } }) });
+  await s.call("pbx_select_target", { name: "b" });
+  const r = await s.call("asterisk_trunk_create", { ...trunk(), target: "b" });
+  assert.match(text(r), /Created and verified/);
+  assert.ok(updates(b).length > 0);
+  for (const u of updates(b)) assert.equal(u.DstFilename, "b_lab.conf");
+  assert.equal(updates(a).length, 0);
+});
+
+test("mismatched target argument is refused with zero writes", async () => {
+  const a = await mock();
+  const b = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, PROV), b: entry(b, PROV) } }) });
+  await s.call("pbx_select_target", { name: "a" });
+  const r = await s.call("asterisk_trunk_create", { ...trunk(), target: "b" });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /not the selected target "a"/);
+  assert.equal(a.actions().length + b.actions().length, 0);
+});
+
+test("target required when more than one target exists", async () => {
+  const a = await mock();
+  const b = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, PROV), b: entry(b, PROV) } }) });
+  await s.call("pbx_select_target", { name: "a" });
+  const r = await s.call("asterisk_extension_delete", { number: "1001" });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /target is required/);
+  assert.equal(a.actions().length, 0);
+  // with a single target it is optional
+  const one = await mock();
+  const s1 = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { only: entry(one, PROV) } }) });
+  assert.match(text(await s1.call("asterisk_extension_create", ext())), /Created and verified/);
+});
+
+test("selection switched while a write is queued still writes to the entry-time target", async () => {
+  const a = await mock({ delayMs: 80 });
+  const b = await mock();
+  const r = reg({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, PROV), b: entry(b, PROV) } }) });
+  r.select({ name: "a" });
+  const p = provTools(r).asterisk_extension_create({ ...ext(), target: "a" });
+  r.select({ name: "b" });
+  assert.match(text(await p), /Created and verified extension/);
+  assert.ok(sections(a).includes("mcp-1001"));
+  assert.equal(b.actions().length, 0);
+});
+
+test("concurrent creates on the same target are serialized", async () => {
+  const a = await mock({ delayMs: 30 });
+  const r = reg({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, PROV) } }) });
+  assert.equal(r.provisionerFor("a"), r.provisionerFor("a"));
+  const h = provTools(r);
+  const outs = await Promise.all(["1001", "1002", "1003"].map((number) => h.asterisk_extension_create(ext({ number }))));
+  for (const o of outs) assert.match(text(o), /Created and verified/);
+  for (const n of ["mcp-1001", "mcp-1002", "mcp-1003"]) assert.ok(sections(a).includes(n), n);
+});
+
+test("gates cannot be widened via tool args", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m, PROV) } }) });
+  for (const extra of [{ trunkAllow: ["0.0.0.0/0"] }, { contextAllow: ["other"] }, { pjsipFile: "pjsip.conf" }, { provision: true }]) {
+    const r = await s.call("asterisk_trunk_create", trunk({ host: "203.0.113.9", ...extra })).catch((e) => ({ isError: true, content: [{ text: String(e.message) }] }));
+    assert.equal(r.isError, true, JSON.stringify(extra));
+  }
+  assert.equal(m.actions().length, 0);
+  // and the same host without the extras is refused by the operator allowlist
+  const plain = await s.call("asterisk_trunk_create", trunk({ host: "203.0.113.9" }));
+  assert.match(text(plain), /not on the PBX_MCP_TRUNK_ALLOW list/);
+});
+
+test("list tools stay available on a provisioning-enabled target", async () => {
+  const m = await mock();
+  const s = await provServer({ PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m, PROV), b: entry(m, PROV) } }) });
+  await s.call("pbx_select_target", { name: "a" });
+  assert.match(text(await s.call("asterisk_trunk_list")), /No managed trunks/);
+  assert.match(text(await s.call("asterisk_extension_list")), /No managed extensions/);
+});
+
+test("legacy 3-argument path uses the implicit target's global gates", async () => {
+  const m = await mock();
+  const r = reg({ ASTERISK_AMI_HOST: "127.0.0.1", ASTERISK_AMI_PORT: String(m.port), ASTERISK_AMI_USERNAME: "mcp", ASTERISK_AMI_PASSWORD: "x" });
+  const cfg = { pjsipFile: "pjsip_mcp.conf", trunkAllow: ["192.0.2.0/24"], contextAllow: ["mcp-test"] };
+  // legacy form: no registry, positional client
+  const handlers = {};
+  registerProvisioningTools({ registerTool: (name, _d, fn) => (handlers[name] = fn) }, cfg, r.getClient);
+  const ok = await handlers.asterisk_trunk_create(trunk());
+  assert.match(text(ok), /Created and verified trunk/);
+  assert.ok(!text(ok).startsWith("Target:"));
+  const no = await handlers.asterisk_trunk_create(trunk({ name: "t2", host: "203.0.113.9" }));
+  assert.equal(no.isError, true);
+  assert.match(text(no), /TRUNK_ALLOW/);
+});

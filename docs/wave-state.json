@@ -33,9 +33,9 @@
    "deps": [
     "2"
    ],
-   "status": "pending",
-   "updated": "2026-10-03T17:21:04",
-   "note": ""
+   "status": "done",
+   "updated": "2026-10-03T17:43:08",
+   "note": "lint+tests ok"
   },
   "4": {
    "title": "Observability: identity in status, Call-ID/From/To/Diversion in channels",

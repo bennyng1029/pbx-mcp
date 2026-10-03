@@ -3,7 +3,7 @@
  * Registered only when PBX_MCP_ALLOW_PROVISION=true, independent of PBX_MCP_ALLOW_WRITE.
  */
 
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AmiClient } from "../ami.js";
 import type { Config } from "../config.js";
@@ -16,6 +16,7 @@ import {
   trunkShape,
   type ManagedObject,
 } from "../provision.js";
+import type { TargetRegistry } from "../targets.js";
 import { asTable, clamp, text, toolError, type ToolResult } from "./format.js";
 
 const fail = (err: unknown): ToolResult =>
@@ -25,14 +26,57 @@ const fail = (err: unknown): ToolResult =>
 
 const ok = (body: string) => text(clamp(body));
 
-export function registerProvisioningTools(server: McpServer, cfg: Config, getClient: () => Promise<AmiClient>) {
-  const prov = new Provisioner(getClient, {
-    file: cfg.pjsipFile,
-    trunkAllow: cfg.trunkAllow,
-    contextAllow: cfg.contextAllow,
-  });
+/**
+ * With a registry, every call resolves the selected target once at entry and uses that target's
+ * own Provisioner (its own client and gates). The four mutators also take a `target` that must
+ * equal the selected target, which ties the operator's environment confirmation to the request.
+ * Without one (the legacy three-argument form) a single Provisioner is built from the global gates.
+ */
+export function registerProvisioningTools(
+  server: McpServer,
+  cfg: Config,
+  getClient: () => Promise<AmiClient>,
+  registry?: TargetRegistry
+) {
+  const legacy = registry
+    ? undefined
+    : new Provisioner(getClient, { file: cfg.pjsipFile, trunkAllow: cfg.trunkAllow, contextAllow: cfg.contextAllow });
   const writes = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
   const deletes = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+
+  /** The mutators gain a strict `target` argument when a registry exists; list tools take none. */
+  const mutator = <S extends z.ZodRawShape>(shape: S) =>
+    registry ? z.object({ ...shape, target: z.string().optional().describe("Name of the selected target; required when more than one target is configured.") }).strict() : shape;
+
+  async function guarded(mutating: boolean, target: string | undefined, run: (prov: Provisioner) => Promise<string>): Promise<ToolResult> {
+    let header = "";
+    try {
+      let prov = legacy;
+      if (!prov) {
+        const snap = registry!.snapshot();
+        header = `Target: ${snap.name} (${snap.host}:${snap.port})\n`;
+        prov = registry!.provisionerFor(snap.name);
+        if (!prov) {
+          throw new Error(
+            `Provisioning is not enabled for target "${snap.name}" (ad hoc, read-only or provision:false); nothing was sent.`
+          );
+        }
+        if (mutating) {
+          if (target === undefined && registry!.namedCount > 1) {
+            throw new Error(`Argument target is required when more than one target is configured; selected target is "${snap.name}".`);
+          }
+          if (target !== undefined && target !== snap.name) {
+            throw new Error(`target "${target}" is not the selected target "${snap.name}"; nothing was sent.`);
+          }
+        }
+      }
+      return ok(header + (await run(prov)));
+    } catch (err) {
+      const r = fail(err);
+      if (header) r.content[0].text = header + r.content[0].text;
+      return r;
+    }
+  }
 
   server.registerTool(
     "asterisk_trunk_create",
@@ -43,20 +87,17 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
         "recognises by source IP. The host must be on PBX_MCP_TRUNK_ALLOW and the context on " +
         "PBX_MCP_CONTEXT_ALLOW. Fails if the name exists. Reloads res_pjsip and verifies the endpoint, " +
         `rolling back on failure. Use dry_run=true to see the exact config without touching Asterisk. Codecs: ${CODECS.join(", ")}.`,
-      inputSchema: trunkShape,
+      inputSchema: mutator(trunkShape),
       annotations: writes,
     },
-    async (args) => {
-      try {
-        const r = await prov.createTrunk(args);
-        return ok(
-          r.verified
-            ? `Created and verified trunk mcp-${args.name}.\n\n${r.config}\n\n${r.verified}`
-            : `Dry run, nothing sent to Asterisk. This block would be written:\n\n${r.config}`
-        );
-      } catch (err) {
-        return fail(err);
-      }
+    async (args: Record<string, unknown>) => {
+      const { target, ...input } = args as { target?: string; name: string };
+      return guarded(true, target, async (prov) => {
+        const r = await prov.createTrunk(input);
+        return r.verified
+          ? `Created and verified trunk mcp-${input.name}.\n\n${r.config}\n\n${r.verified}`
+          : `Dry run, nothing sent to Asterisk. This block would be written:\n\n${r.config}`;
+      });
     }
   );
 
@@ -68,13 +109,7 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
-      try {
-        return ok(describe(await prov.list(), "trunk"));
-      } catch (err) {
-        return fail(err);
-      }
-    }
+    async () => guarded(false, undefined, async (prov) => describe(await prov.list(), "trunk"))
   );
 
   server.registerTool(
@@ -82,15 +117,12 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
     {
       title: "Delete a managed SIP trunk",
       description: "Delete a trunk created by asterisk_trunk_create. Only 'mcp-' trunks in the managed file can be deleted.",
-      inputSchema: { name: nameSchema.shape.name },
+      inputSchema: mutator({ name: nameSchema.shape.name }),
       annotations: deletes,
     },
-    async (args) => {
-      try {
-        return ok(await prov.deleteTrunk(args));
-      } catch (err) {
-        return fail(err);
-      }
+    async (args: Record<string, unknown>) => {
+      const { target, ...input } = args as { target?: string; name: string };
+      return guarded(true, target, (prov) => prov.deleteTrunk(input));
     }
   );
 
@@ -103,22 +135,19 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
         "not a dialplan extension. The SIP username is mcp-<number>. The password is generated server-side and returned once, in this response " +
         "only; it cannot be retrieved later. The context must be on PBX_MCP_CONTEXT_ALLOW. Fails if the number " +
         "exists. Use dry_run=true to preview the config without touching Asterisk.",
-      inputSchema: extensionShape,
+      inputSchema: mutator(extensionShape),
       annotations: writes,
     },
-    async (args) => {
-      try {
-        const r = await prov.createExtension(args);
-        return ok(
-          r.verified
-            ? `Created and verified extension mcp-${args.number}.\n` +
-                `SIP username: mcp-${args.number} (the endpoint name; register with this, not the bare number)\nPassword: ${r.password}\n` +
-                `The password is shown once and cannot be retrieved again.\n\n${r.config}\n\n${r.verified}`
-            : `Dry run, nothing sent to Asterisk. This block would be written:\n\n${r.config}`
-        );
-      } catch (err) {
-        return fail(err);
-      }
+    async (args: Record<string, unknown>) => {
+      const { target, ...input } = args as { target?: string; number: string };
+      return guarded(true, target, async (prov) => {
+        const r = await prov.createExtension(input);
+        return r.verified
+          ? `Created and verified extension mcp-${input.number}.\n` +
+              `SIP username: mcp-${input.number} (the endpoint name; register with this, not the bare number)\nPassword: ${r.password}\n` +
+              `The password is shown once and cannot be retrieved again.\n\n${r.config}\n\n${r.verified}`
+          : `Dry run, nothing sent to Asterisk. This block would be written:\n\n${r.config}`;
+      });
     }
   );
 
@@ -130,13 +159,7 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
-      try {
-        return ok(describe(await prov.list(), "extension"));
-      } catch (err) {
-        return fail(err);
-      }
-    }
+    async () => guarded(false, undefined, async (prov) => describe(await prov.list(), "extension"))
   );
 
   server.registerTool(
@@ -144,15 +167,12 @@ export function registerProvisioningTools(server: McpServer, cfg: Config, getCli
     {
       title: "Delete a managed SIP extension",
       description: "Delete an extension created by asterisk_extension_create. Only 'mcp-' extensions in the managed file can be deleted.",
-      inputSchema: { number: numberSchema.shape.number },
+      inputSchema: mutator({ number: numberSchema.shape.number }),
       annotations: deletes,
     },
-    async (args) => {
-      try {
-        return ok(await prov.deleteExtension(args));
-      } catch (err) {
-        return fail(err);
-      }
+    async (args: Record<string, unknown>) => {
+      const { target, ...input } = args as { target?: string; number: string };
+      return guarded(true, target, (prov) => prov.deleteExtension(input));
     }
   );
 }
