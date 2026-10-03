@@ -42,7 +42,7 @@ async function enrichChannels(ami: AmiClient, rows: AmiMessage[], budgetMs: numb
   let spent = false;
   const jobs: Array<() => Promise<void>> = [];
   for (const row of rows.slice(0, ENRICH_CHANNELS)) {
-    if (!(row.Channel ?? "").startsWith("PJSIP/")) continue;
+    if (!(row.Channel ?? "").startsWith("PJSIP/") || /[\r\n]/.test(row.Channel)) continue;
     for (const [column, variable] of CHANNEL_VARS) {
       jobs.push(async () => {
         const left = deadline - Date.now();
@@ -203,15 +203,21 @@ export function registerAsteriskTools(
           const msgs = await ami.action({ Action: "PJSIPShowEndpoints" });
           rows = listRows(msgs, "EndpointList");
         } catch (err) {
-          // Only "the module is not there" falls back; permission errors and timeouts are real errors.
-          if (!(err instanceof AmiError && /no such command|invalid\/unknown|not loaded|unknown action/i.test(err.message))) throw err;
-          pjsipLoaded = false;
+          // Asterisk answers "loaded, nothing configured" with an Error reply, and "module absent" with
+          // an unknown-command Error; permission errors and timeouts are real errors.
+          if (err instanceof AmiError && /^No endpoints found/i.test(err.message)) rows = [];
+          else if (err instanceof AmiError && /no such command|invalid\/unknown|not loaded|unknown action/i.test(err.message)) pjsipLoaded = false;
+          else throw err;
         }
 
         if (!pjsipLoaded) {
           // chan_pjsip is absent or unloaded, so try the legacy channel driver.
-          const msgs = await ami.action({ Action: "SIPpeers" });
-          rows = listRows(msgs, "PeerEntry");
+          try {
+            rows = listRows(await ami.action({ Action: "SIPpeers" }), "PeerEntry");
+          } catch (err) {
+            // Neither driver is available (chan_sip is gone on Asterisk 21+): keep the helpful hint.
+            if (!(err instanceof AmiError && /no such command|invalid\/unknown|unknown action/i.test(err.message))) throw err;
+          }
           source = "chan_sip";
         } else if (!rows.length) {
           return text("PJSIP is loaded, 0 endpoints configured.");
@@ -296,7 +302,12 @@ export function registerAsteriskTools(
       try {
         const target = getSnapshot();
         const policy = checkAsteriskCommand(command, write && !target.readOnly);
-        if (!policy.allowed) return write && target.readOnly ? refuseReadOnly(target) : text(`Refused. ${policy.reason}`, true);
+        if (!policy.allowed) {
+          // On a read-only target say so only when write mode would have allowed the command.
+          return write && target.readOnly && checkAsteriskCommand(command, true).allowed
+            ? refuseReadOnly(target)
+            : text(`Refused. ${policy.reason}`, true);
+        }
 
         const ami = await target.getClient();
         const out = await ami.command(command);

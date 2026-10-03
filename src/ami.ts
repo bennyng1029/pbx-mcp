@@ -83,8 +83,9 @@ export class AmiClient {
       this.socket = socket;
     });
 
+    if (this.closed || !this.socket) throw new AmiError("AMI connection closed during connect");
     // Asterisk announces itself before accepting any action.
-    this.socket!.setTimeout(0);
+    this.socket.setTimeout(0);
     this.socket!.removeAllListeners("error");
     this.socket!.on("error", () => {
       this.connected = false;

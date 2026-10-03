@@ -168,10 +168,10 @@ function ipLiteral(host: string): string | undefined {
 function hostAllowList(entries: string[]): net.BlockList {
   const list = new net.BlockList();
   for (const entry of entries) {
-    const [base, bits] = entry.split("/");
+    const [base, bits, ...extra] = entry.split("/");
     const family = net.isIPv4(base) ? "ipv4" : net.isIPv6(base) ? "ipv6" : undefined;
     const max = family === "ipv4" ? 32 : 128;
-    if (!family || (bits !== undefined && !(/^\d{1,3}$/.test(bits) && Number(bits) <= max))) {
+    if (!family || extra.length || (bits !== undefined && !(/^\d{1,3}$/.test(bits) && Number(bits) <= max))) {
       throw new Error(`PBX_MCP_HOST_ALLOW entry "${entry}" is not a valid CIDR.`);
     }
     if (bits === undefined) list.addAddress(base, family);
@@ -268,7 +268,7 @@ export class TargetRegistry {
     const base = this.opts.adhocBase;
     if (!base) throw new Error("Ad hoc targets need the default credentials (ASTERISK_AMI_USERNAME/PASSWORD) in the environment.");
 
-    const tls = args.tls ?? false;
+    const tls = args.tls ?? base.tls;
     const cur = this.adhoc;
     if (cur && cur.entry.host === host && cur.entry.port === port && cur.entry.tls === tls) {
       this.selected = cur;
@@ -316,7 +316,18 @@ export class TargetRegistry {
       ...this.identityOf(h),
       getClient: async () => {
         if (h.evicted) throw new Error("target no longer selected");
-        return h.get();
+        let client: AmiClient;
+        try {
+          client = await h.get();
+        } catch (err) {
+          throw h.evicted ? new Error("target no longer selected") : err;
+        }
+        // Eviction can land while the holder was connecting or retrying: never hand out (or leave open) a client of an evicted target.
+        if (h.evicted) {
+          h.clients.forEach((c) => c.close());
+          throw new Error("target no longer selected");
+        }
+        return client;
       },
     };
   }

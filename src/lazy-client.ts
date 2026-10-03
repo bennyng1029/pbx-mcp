@@ -3,12 +3,11 @@
  *
  * One connect is in flight at a time and every concurrent caller awaits it, so
  * parallel cold calls open one socket and nobody receives a client before its
- * connect (and, for AMI, its login) has finished. Each attempt carries a
- * generation so a late result of an old attempt cannot disturb newer state.
+ * connect (and, for AMI, its login) has finished. A late result of an old
+ * attempt cannot disturb newer state: only the current attempt may change it.
  */
 
 interface Attempt<T> {
-  gen: number;
   client: T;
   ready: boolean;
   promise: Promise<T>;
@@ -16,10 +15,9 @@ interface Attempt<T> {
 
 export function lazyClient<T extends { connect(): Promise<void>; close(): void }>(create: () => T, alive: (c: T) => boolean) {
   let current: Attempt<T> | undefined;
-  let generation = 0;
 
   const start = (): Attempt<T> => {
-    const attempt = { gen: ++generation, client: create(), ready: false } as Attempt<T>;
+    const attempt = { client: create(), ready: false } as Attempt<T>;
     attempt.promise = attempt.client.connect().then(
       () => {
         if (current === attempt) attempt.ready = true;

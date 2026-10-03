@@ -83,6 +83,17 @@ test("close during the TCP phase rejects instead of hanging", async () => {
   srv.close();
 });
 
+test("close in the TCP-connect window rejects the pending connect", async () => {
+  const m = await mock();
+  const c = newClient(m, 3000);
+  const t0 = Date.now();
+  const p = c.connect();
+  c.close(); // same tick: the socket is destroyed before its connect callback can fire
+  await assert.rejects(p, AmiError);
+  assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
+  assert.equal(c.isConnected, false);
+});
+
 test("login success racing close does not publish a ready client", async () => {
   const m = await mock({ loginDelayMs: 150 });
   const c = newClient(m);

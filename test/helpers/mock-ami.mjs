@@ -90,6 +90,7 @@ export async function startMockAmi(seed = {}) {
         return list("channels", "CoreShowChannel", state.channels, "CoreShowChannelsComplete");
       case "PJSIPShowEndpoints":
         if (!state.endpoints) return err("Invalid/unknown command: PJSIPShowEndpoints");
+        if (!state.endpoints.length) return err("No endpoints found"); // what real Asterisk sends for an empty list
         return list("endpoints", "EndpointList", state.endpoints, "EndpointListComplete");
       case "SIPpeers":
         return list("peers", "PeerEntry", state.peers, "PeerlistComplete");

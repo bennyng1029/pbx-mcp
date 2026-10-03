@@ -612,3 +612,21 @@ test("legacy 3-argument path uses the implicit target's global gates", async () 
   assert.equal(no.isError, true);
   assert.match(text(no), /TRUNK_ALLOW/);
 });
+
+test("an evicted ad hoc target cannot be reopened by a call already in flight", async () => {
+  const m1 = await mock();
+  const m2 = await mock();
+  const r = reg({ ...ADHOC(m1), PBX_MCP_ADHOC_PORTS: `${m1.port},${m2.port}` });
+  r.select({ host: "127.0.0.1", port: m1.port });
+  const snap = r.snapshot();
+  const inFlight = snap.getClient(); // passes the first eviction check, then awaits the holder
+  r.select({ host: "127.0.0.1", port: m2.port }); // evicts it before the holder resumes
+  await assert.rejects(inFlight, /no longer selected/);
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal(m1.sockets.size, 0, "no connection to the evicted target stays open");
+});
+
+test("a CIDR with extra slashes is rejected", async () => {
+  const m = await mock();
+  assert.throws(() => reg(ADHOC(m, { PBX_MCP_HOST_ALLOW: "127.0.0.0/8/junk" })), /not a valid CIDR/);
+});
