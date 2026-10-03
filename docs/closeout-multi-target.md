@@ -1,6 +1,6 @@
 # Closeout summary: multi-target wave
 
-Wave: multi-target (full track, 7 tasks). Branch feat/multi-target, 8 commits since the plan commit 0182ad2 (7 task commits and 1 review-fix commit). Not tagged: the owner picks the release tag.
+Wave: multi-target (full track, 7 tasks). Branch feat/multi-target, one commit per task plus a review-fix commit since the plan commit 0182ad2. Not tagged: the owner picks the release tag.
 
 Delivered: shared AMI connect with login-gated readiness, bounded calls and no false empties (Task 1); named targets file, registry, select/list/get tools and read-only enforcement on one snapshot (Task 2); per-target provisioning gates with a `target` argument (Task 3); target identity in status and Call-ID/From/To/Diversion in channels (Task 4); docs (Task 5); baseline and final live verification (Tasks 0 and 6).
 
