@@ -11,3 +11,5 @@ Cycle 3 (Opus): 2 blocking (zero-endpoints reply modelled wrongly, missing conne
 Planning-phase cycle counts (A/B/C) are in the planning session's record, not re-stated here.
 
 Live verification: docs/verification/baseline.md, task1.md, task4-probe.md, final.md. Open owner action: the lab AMI user needs write system,call,reporting for the channels, endpoints, hangup and Call-ID rows (CF-001). Graphify is not installed, so Rule 13a was skipped.
+
+Owner decision 2026-10-03: the BLOCKED live rows (channels, endpoints, hangup_preview, hangup, Call-ID cross-check) are accepted as carry-forward CF-001; the owner follows up manually. Wave closed.

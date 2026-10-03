@@ -31,6 +31,10 @@ Build: HEAD after Task 5 (`dist/` rebuilt). A fresh server process per phase (`d
 
 `vfy-1001` deleted; `pjsip show endpoints` and `pjsip show aors` print `No objects found.`; trunk and extension lists empty; `core show channels concise` empty; UAs destroyed; no container or process of this wave left running (the one `dist/index.js` process is the owner's registered `pbx-lab` server). A call originated earlier in the baseline was left up on the PBX when sipclient's hangup sent no BYE (`sip_code 0`); it was hung up with `channel request hangup`.
 
+## Owner decision (2026-10-03)
+
+The owner accepted the BLOCKED rows as carry-forward CF-001 and will re-run them manually after changing the lab `manager.conf`.
+
 ## Owner action
 
 The BLOCKED rows need one `manager.conf` change on the lab Asterisk: for the `mcp` user, `write = system,call,reporting,command,config,originate`, then `manager reload`. Then re-run channels, endpoints, hangup_preview, hangup and the Call-ID cross-check; or carry them forward.
