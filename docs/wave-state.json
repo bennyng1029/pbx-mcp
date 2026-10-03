@@ -15,9 +15,9 @@
    "deps": [
     "0"
    ],
-   "status": "pending",
-   "updated": "2026-10-03T17:21:04",
-   "note": ""
+   "status": "done",
+   "updated": "2026-10-03T17:35:22",
+   "note": "lint+tests ok"
   },
   "2": {
    "title": "Targets: file loader, registry, select/list/get tools, read-only enforcement",

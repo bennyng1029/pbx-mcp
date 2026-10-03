@@ -29,6 +29,7 @@ export class AmiClient {
   private buffer = "";
   private actionSeq = 0;
   private connected = false;
+  private closed = false;
   private greeting = "";
 
   /** Resolvers waiting on a message, checked in order against each parsed message. */
@@ -47,23 +48,37 @@ export class AmiClient {
   async connect(): Promise<void> {
     if (this.connected) return;
 
+    const timeout = this.opts.timeoutMs ?? 10000;
+    const deadline = Date.now() + timeout;
+    this.closed = false;
+
     await new Promise<void>((resolve, reject) => {
-      const timeout = this.opts.timeoutMs ?? 10000;
-      const onError = (err: Error) => reject(new AmiError(`AMI connect failed: ${err.message}`));
+      let settled = false;
+      const fail = (err: AmiError) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      };
+      const onUp = () => {
+        settled = true;
+        resolve();
+      };
 
       const socket = this.opts.tls
-        ? tls.connect({ host: this.opts.host, port: this.opts.port, rejectUnauthorized: false }, resolve)
-        : net.connect({ host: this.opts.host, port: this.opts.port }, resolve);
+        ? tls.connect({ host: this.opts.host, port: this.opts.port, rejectUnauthorized: false }, onUp)
+        : net.connect({ host: this.opts.host, port: this.opts.port }, onUp);
 
       socket.setTimeout(timeout, () => {
         socket.destroy();
-        reject(new AmiError(`AMI connect timed out after ${timeout}ms`));
+        fail(new AmiError(`AMI connect timed out after ${timeout}ms`));
       });
-      socket.once("error", onError);
+      socket.once("error", (err: Error) => fail(new AmiError(`AMI connect failed: ${err.message}`)));
       socket.setEncoding("utf8");
       socket.on("data", (chunk: string) => this.onData(chunk));
       socket.on("close", () => {
         this.connected = false;
+        fail(new AmiError("AMI connection closed before the connection was established"));
       });
       this.socket = socket;
     });
@@ -74,24 +89,35 @@ export class AmiClient {
     this.socket!.on("error", () => {
       this.connected = false;
     });
-    this.connected = true;
 
-    const login = await this.action({
-      Action: "Login",
-      Username: this.opts.username,
-      Secret: this.opts.password,
-      Events: "off", // we poll, we do not stream, so suppress the firehose
-    });
+    try {
+      // Connect and login share one budget of timeoutMs.
+      const login = await this.action(
+        {
+          Action: "Login",
+          Username: this.opts.username,
+          Secret: this.opts.password,
+          Events: "off", // we poll, we do not stream, so suppress the firehose
+        },
+        Math.max(1, deadline - Date.now())
+      );
 
-    if ((login[0]?.Response ?? "").toLowerCase() !== "success") {
-      const reason = login[0]?.Message ?? "unknown reason";
+      if ((login[0]?.Response ?? "").toLowerCase() !== "success") {
+        throw new AmiError(`AMI login rejected: ${login[0]?.Message ?? "unknown reason"}`);
+      }
+      if (this.closed) throw new AmiError("AMI connection closed during login");
+    } catch (err) {
       this.close();
-      throw new AmiError(`AMI login rejected: ${reason}`);
+      throw err;
     }
+
+    // Only a client that has logged in is ever reported as connected.
+    this.connected = true;
   }
 
   close(): void {
     this.connected = false;
+    this.closed = true;
     this.socket?.destroy();
     this.socket = undefined;
     this.waiters = [];
@@ -139,14 +165,7 @@ export class AmiClient {
     const collected: AmiMessage[] = [];
 
     const result = new Promise<AmiMessage[]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        // A timeout after some rows arrived is usually a missing Complete event,
-        // so hand back what we have rather than losing it.
-        if (collected.length) resolve(collected);
-        else reject(new AmiError(`AMI action ${fields.Action} timed out after ${timeout}ms`));
-      }, timeout);
-
-      this.waiters.push((msg) => {
+      const waiter = (msg: AmiMessage): boolean => {
         if (msg.ActionID !== actionId) return false;
         collected.push(msg);
 
@@ -162,7 +181,20 @@ export class AmiClient {
           return true;
         }
         return false;
-      });
+      };
+
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        // Anything collected means a list started and its Complete event never came:
+        // an incomplete list is an error, never a silently shortened answer.
+        if (collected.length) {
+          reject(new AmiError(`AMI action ${fields.Action} returned an incomplete list (no Complete event within ${timeout}ms)`));
+        } else {
+          reject(new AmiError(`AMI action ${fields.Action} timed out after ${timeout}ms`));
+        }
+      }, timeout);
+
+      this.waiters.push(waiter);
     });
 
     const payload =
@@ -203,7 +235,14 @@ export function parseMessage(raw: string): AmiMessage {
   return msg;
 }
 
-/** Keep only the event rows of a list action, dropping the Response and Complete wrappers. */
+/**
+ * Keep only the event rows of a list action, dropping the Response and Complete wrappers.
+ * An Error reply (permission denied, unknown action) throws: it is never an empty list.
+ */
 export function listRows(msgs: AmiMessage[], eventName: string): AmiMessage[] {
+  const first = msgs[0];
+  if ((first?.Response ?? "").toLowerCase() === "error") {
+    throw new AmiError(first.Message ?? "Asterisk returned an error");
+  }
   return msgs.filter((m) => (m.Event ?? "").toLowerCase() === eventName.toLowerCase());
 }

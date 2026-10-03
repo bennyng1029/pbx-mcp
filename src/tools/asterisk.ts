@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { AmiClient, listRows, type AmiMessage } from "../ami.js";
+import { AmiClient, AmiError, listRows, type AmiMessage } from "../ami.js";
 import { assertNoHeaderInjection, checkAsteriskCommand, type Config } from "../config.js";
 import { asTable, text, toolError } from "./format.js";
 
@@ -104,18 +104,23 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
         let rows: AmiMessage[] = [];
         let source = "PJSIP";
 
+        let pjsipLoaded = true;
         try {
           const msgs = await ami.action({ Action: "PJSIPShowEndpoints" });
           rows = listRows(msgs, "EndpointList");
-        } catch {
-          rows = [];
+        } catch (err) {
+          // Only "the module is not there" falls back; permission errors and timeouts are real errors.
+          if (!(err instanceof AmiError && /no such command|invalid\/unknown|not loaded|unknown action/i.test(err.message))) throw err;
+          pjsipLoaded = false;
         }
 
-        if (!rows.length) {
+        if (!pjsipLoaded) {
           // chan_pjsip is absent or unloaded, so try the legacy channel driver.
           const msgs = await ami.action({ Action: "SIPpeers" });
           rows = listRows(msgs, "PeerEntry");
           source = "chan_sip";
+        } else if (!rows.length) {
+          return text("PJSIP is loaded, 0 endpoints configured.");
         }
 
         if (filter) {
@@ -123,7 +128,7 @@ export function registerAsteriskTools(server: McpServer, cfg: Config, getClient:
           rows = rows.filter((r) => Object.values(r).some((v) => v.toLowerCase().includes(needle)));
         }
 
-        if (!rows.length) return text("No endpoints found. Check that chan_pjsip or chan_sip is loaded.");
+        if (!rows.length) return text(filter ? `No endpoints match "${filter}".` : "No endpoints found. Check that chan_pjsip or chan_sip is loaded.");
 
         const table =
           source === "PJSIP"

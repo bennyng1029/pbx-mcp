@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { AmiClient } from "./ami.js";
 import { EslClient } from "./esl.js";
 import { loadConfig } from "./config.js";
+import { lazyClient } from "./lazy-client.js";
 import { registerAsteriskTools } from "./tools/asterisk.js";
 import { registerProvisioningTools } from "./tools/provision.js";
 import { registerFreeswitchTools } from "./tools/freeswitch.js";
@@ -39,27 +40,6 @@ const server = new McpServer(
       "By Tahir Almas, ICT Innovations (https://ictinnovations.com).",
   }
 );
-
-/**
- * Clients are created on first use and reused afterwards. A dropped socket is
- * replaced on the next call rather than at some background interval, so an idle
- * server holds no connection to the PBX.
- */
-function lazyClient<T extends { connect(): Promise<void>; close(): void }>(create: () => T, alive: (c: T) => boolean) {
-  let client: T | undefined;
-  return async (): Promise<T> => {
-    if (client && alive(client)) return client;
-    client?.close();
-    client = create();
-    try {
-      await client.connect();
-    } catch (err) {
-      client = undefined;
-      throw err;
-    }
-    return client;
-  };
-}
 
 if (cfg.asterisk) {
   const ami = cfg.asterisk;

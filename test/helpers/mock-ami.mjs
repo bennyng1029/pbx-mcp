@@ -18,10 +18,22 @@ export async function startMockAmi(seed = {}) {
     swallowNext: undefined, // an Action name: apply it, but never reply (once)
     delayMs: 0, // delay every reply, to expose interleaving
     sockets: new Set(),
+    connections: 0, // sockets ever accepted
+    requireLogin: false, // answer any action before a successful Login with Permission denied
+    loginDelayMs: 0, // delay only the Login reply
+    rejectLogin: false, // answer Login with an Error
+    errorFor: {}, // { Action: "message" } force an Error reply for that action
+    omitComplete: false, // list actions send rows but never the ...Complete event
+    channels: [], // CoreShowChannels rows: objects of AMI fields
+    endpoints: undefined, // PJSIPShowEndpoints rows; undefined = module not loaded (Invalid/unknown command)
+    peers: [], // SIPpeers rows
+    vars: {}, // Getvar: { "<Channel>|<Variable>": value }
   };
 
   const server = net.createServer((sock) => {
     state.sockets.add(sock);
+    state.connections++;
+    sock.loggedIn = false;
     sock.on("close", () => state.sockets.delete(sock));
     sock.on("error", () => {});
     sock.setEncoding("utf8");
@@ -39,12 +51,16 @@ export async function startMockAmi(seed = {}) {
           if (c > 0) req[line.slice(0, c).trim()] = line.slice(c + 1).trim();
         }
         state.received.push(req);
-        const reply = respond(req);
+        const reply = respond(req, sock);
         if (state.swallowNext === req.Action) {
           state.swallowNext = undefined;
           continue;
         }
-        setTimeout(() => sock.write(`${reply}\r\nActionID: ${req.ActionID}\r\n\r\n`), state.delayMs);
+        const wait = state.delayMs + (req.Action === "Login" ? state.loginDelayMs : 0);
+        setTimeout(() => {
+          // Every message of the reply (a list is several) carries the request's ActionID.
+          if (!sock.destroyed) sock.write(reply.split("\r\n\r\n").map((m) => `${m}\r\nActionID: ${req.ActionID}`).join("\r\n\r\n") + "\r\n\r\n");
+        }, wait);
       }
     });
   });
@@ -54,10 +70,33 @@ export async function startMockAmi(seed = {}) {
     out(["Response: Success", "Message: Command output follows", ...text.split("\n").map((l) => `Output: ${l}`)]);
   const err = (m) => out(["Response: Error", `Message: ${m}`]);
 
-  function respond(req) {
+  /** A list reply: Response, one event per row (each its own message), then the Complete event. */
+  const list = (listName, event, rows, complete) => {
+    const msgs = [`Response: Success\r\nEventList: start\r\nMessage: ${listName} will follow`];
+    for (const r of rows) msgs.push(`Event: ${event}\r\n` + Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("\r\n"));
+    if (!state.omitComplete) msgs.push(`Event: ${complete}\r\nEventList: Complete\r\nListItems: ${rows.length}`);
+    return msgs.join("\r\n\r\n");
+  };
+
+  function respond(req, sock) {
+    if (req.Action !== "Login" && state.requireLogin && !sock.loggedIn) return err("Permission denied");
+    if (state.errorFor[req.Action]) return err(state.errorFor[req.Action]);
     switch (req.Action) {
       case "Login":
+        if (state.rejectLogin) return err("Authentication failed");
+        sock.loggedIn = true;
         return out(["Response: Success", "Message: Authentication accepted"]);
+      case "CoreShowChannels":
+        return list("channels", "CoreShowChannel", state.channels, "CoreShowChannelsComplete");
+      case "PJSIPShowEndpoints":
+        if (!state.endpoints) return err("Invalid/unknown command: PJSIPShowEndpoints");
+        return list("endpoints", "EndpointList", state.endpoints, "EndpointListComplete");
+      case "SIPpeers":
+        return list("peers", "PeerEntry", state.peers, "PeerlistComplete");
+      case "Getvar": {
+        const v = state.vars[`${req.Channel}|${req.Variable}`];
+        return v === undefined ? err("No such variable") : out(["Response: Success", `Variable: ${req.Variable}`, `Value: ${v}`]);
+      }
       case "GetConfig": {
         const lines = ["Response: Success"];
         let n = 0;
@@ -107,6 +146,9 @@ export async function startMockAmi(seed = {}) {
           const found = !state.failVerify && state.categories.some((c) => c.name === m[1] && c.vars.some(([k, v]) => k === "type" && v === "endpoint"));
           return cli(found ? `Endpoint:  ${m[1]}\nAor:  ${m[1]}` : `Unable to find object ${m[1]}.`);
         }
+        if (c === "core show uptime") return cli("System uptime: 1 minute\nLast reload: 1 minute");
+        if (c === "core show version") return cli("Asterisk mock 22.0.0");
+        if (c === "core show calls") return cli("0 active calls\n0 calls processed");
         return err(`No such command '${c}'`);
       }
       default:
