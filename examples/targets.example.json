@@ -1,0 +1,29 @@
+{
+  "targets": {
+    "lab-a": {
+      "host": "192.0.2.10",
+      "port": 5038,
+      "username": "mcp",
+      "passwordEnv": "LAB_A_AMI_PASSWORD",
+      "label": "Lab Asterisk A",
+      "dialplanHint": "DIDs route in context from-trunk"
+    },
+    "lab-b": {
+      "host": "192.0.2.20",
+      "username": "mcp",
+      "passwordEnv": "LAB_B_AMI_PASSWORD",
+      "label": "Lab Asterisk B (provisioning on)",
+      "provision": true,
+      "pjsipFile": "pjsip_mcp.conf",
+      "trunkAllow": ["198.51.100.0/24"],
+      "contextAllow": ["mcp-test"]
+    },
+    "prod-view": {
+      "host": "192.0.2.30",
+      "username": "mcp",
+      "password": "change-me",
+      "label": "Production, look only",
+      "readOnly": true
+    }
+  }
+}

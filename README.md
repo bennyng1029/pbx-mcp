@@ -75,14 +75,31 @@ Everything comes from environment variables. Set the Asterisk block, the FreeSWI
 | `ASTERISK_AMI_PASSWORD` | | AMI secret |
 | `ASTERISK_AMI_TLS` | `false` | Set `true` if `tlsenable=yes` |
 
-Your `manager.conf` user needs at least `read = system,call,command` and `write = command`. Add `originate` only if you plan to turn on write mode.
+Asterisk authorises each AMI action against the user's **write** permission, so the list tools need classes in `write`, not only in `read`: `system` and `reporting` for `asterisk_channels` and `asterisk_endpoints`, `call` for `asterisk_hangup` and for the Call-ID, From, To and Diversion columns of `asterisk_channels`, `command` for the CLI. Add `originate` only if you plan to turn on write mode. Without these, the tools return `Permission denied` as an error (never an empty list), and the extra channel columns show `n/a`.
 
 ```ini
 [mcp]
 secret = change-me
 read = system,call,command
-write = command
+write = system,call,reporting,command
 ```
+
+### Several Asterisk servers (targets)
+
+One server process can drive several lab Asterisk boxes. The agent picks one at session start with `pbx_select_target`; every Asterisk tool then talks to it.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PBX_MCP_TARGETS_FILE` | *(unset)* | Path to a JSON file of named targets, see [`examples/targets.example.json`](examples/targets.example.json). Strict: an unknown key stops start-up |
+| `PBX_MCP_HOST_ALLOW` | *(unset)* | Comma-separated CIDRs an **ad hoc** target IP must be inside. Unset means ad hoc is disabled. Keep it narrow |
+| `PBX_MCP_ADHOC_PORTS` | `5038` | Ports an ad hoc target may use |
+
+- A target is `host`, `port`, `username`, and `passwordEnv` (name of an environment variable, preferred) or `password`, plus optional `label`, `tls`, `readOnly`, `dialplanHint` and the provisioning gates `provision`, `pjsipFile`, `trunkAllow`, `contextAllow`. A literal password in a file readable by group or others logs a warning at start-up; use `chmod 600`. Secrets are never printed in output or errors.
+- With only `ASTERISK_AMI_HOST` set, nothing changes: that is the target `default`. With a file as well, the targets are `default` plus the file's, and the agent must select one (`no_target_selected` until it does). One target needs no selection. A file target may not be named `default`.
+- `pbx_list_targets`, `pbx_get_target` and `pbx_select_target` (a `name`, or an ad hoc `host` with optional `port` and `tls`). The tool schemas are strict: credentials and provisioning gates can never be passed as arguments.
+- **Ad hoc targets** are for a quick look at a box that is not in the file. The host must be an **IP literal** inside `PBX_MCP_HOST_ALLOW` (hostnames need a named target), the port must be in `PBX_MCP_ADHOC_PORTS`, the **default `ASTERISK_AMI_USERNAME`/`ASTERISK_AMI_PASSWORD` are sent to it in plaintext** (AMI is plaintext on 5038 and TLS verification is off), and it is always read-only. Only one ad hoc connection stays open at a time.
+- **Writes** (originate, hangup, non-read CLI, trunk and extension create/delete) need `PBX_MCP_ALLOW_WRITE=true` (or `PBX_MCP_ALLOW_PROVISION=true`) **and** a selected target that permits them. A `readOnly` target and every ad hoc target refuse them.
+- A command or list that does not finish within `PBX_MCP_TIMEOUT_MS` is an error, and a list that starts but never completes is reported as incomplete rather than shortened. An unreachable Asterisk returns a clear error promptly.
 
 ### FreeSWITCH
 
@@ -107,6 +124,10 @@ write = command
 | `PBX_MCP_TRUNK_ALLOW` | *(unset)* | Comma-separated IPv4 CIDRs and hostnames a trunk may point at. **Unset means `asterisk_trunk_create` is refused** |
 | `PBX_MCP_CONTEXT_ALLOW` | *(unset)* | Comma-separated dialplan contexts new objects may use. Unset means every create is refused |
 | `PBX_MCP_PJSIP_FILE` | `pjsip_mcp.conf` | The one include file provisioning writes to. A bare `*.conf` name, never `pjsip.conf` |
+
+These three apply to the `default` (environment) target only. A target from the targets file has provisioning **off** and empty allowlists unless its own entry sets `provision`, `trunkAllow` and `contextAllow`; the global values never widen a file target. Each provisioning-enabled target has its own write queue and its own managed file.
+
+**Name the environment.** Provisioning writes to whichever target is selected. The four create/delete tools take a `target` argument that must equal the selected target (required when more than one target exists), and every result starts with `Target: <name> (<host>:<port>)`. When an assistant asks to create or delete something, confirm which environment it means before approving; the server cannot tell a lab from production.
 
 ## Claude Desktop
 
@@ -233,7 +254,7 @@ Codecs are `ulaw`, `alaw`, `g722`, `g729`, `opus`. Names and numbers match `^[A-
    #include pjsip_mcp.conf
    ```
 
-3. Give the AMI user the extra permissions provisioning needs. `config` is for `UpdateConfig`/`GetConfig`, `command` for the reload and verify steps, `originate` only if you also use write mode:
+3. Give the AMI user the extra permissions provisioning needs. `config` is for `UpdateConfig`/`GetConfig`, `command` for the reload and verify steps, `originate` only if you also use write mode (`system`, `call` and `reporting` are for the list and hangup tools):
 
    ```ini
    [mcp]
@@ -241,8 +262,10 @@ Codecs are `ulaw`, `alaw`, `g722`, `g729`, `opus`. Names and numbers match `^[A-
    deny = 0.0.0.0/0.0.0.0
    permit = 192.0.2.0/24
    read = system,call,command
-   write = command,originate,config
+   write = system,call,reporting,command,originate,config
    ```
+
+   Trying this on a lab Asterisk: the managed file must exist and be `#include`d (steps 1 and 2); objects are always named `mcp-<name>`, so they cannot collide with hand-written config.
 
 4. Trunks reference a transport named `transport-udp`, `transport-tcp` or `transport-tls`; define the ones you will use in `pjsip.conf`.
 

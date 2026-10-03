@@ -26,3 +26,21 @@ what needs controlling, not just the write flag.
 doesn't verify the certificate chain, which protects against passive sniffing
 but not an active attacker on the path. Inside a VPN that's a reasonable trade;
 across the internet it isn't enough on its own.
+
+**Ad hoc targets send your default AMI credentials in plaintext** to any IP in
+`PBX_MCP_HOST_ALLOW`. AMI is plaintext on 5038 and pbx-mcp does not verify TLS
+certificates, so use ad hoc only on trusted lab networks and keep the CIDR list
+as narrow as the labs you actually use. Ad hoc targets are always read-only,
+and hostnames are not accepted (use a named target).
+
+**Targets file.** Prefer `passwordEnv` to a literal password, and keep the file
+`chmod 600` (pbx-mcp warns if a file with literal passwords is readable by
+group or others). The provisioning gates (`provision`, `trunkAllow`,
+`contextAllow`, `pjsipFile`) can only come from the operator's file or
+environment, never from a tool argument, and file targets start with
+provisioning off.
+
+**Name the environment before provisioning.** Trunk and extension create and
+delete go to the selected target. Confirm which environment is meant before
+approving a write; the `target` argument and the `Target:` line in every result
+exist so a lab approval is not mistaken for a production one.

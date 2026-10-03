@@ -2,8 +2,8 @@
 
 ## "No PBX configured"
 
-pbx-mcp exited immediately because neither `ASTERISK_AMI_HOST` nor
-`FREESWITCH_ESL_HOST` was set.
+pbx-mcp exited immediately because none of `ASTERISK_AMI_HOST`,
+`PBX_MCP_TARGETS_FILE` (or `PBX_MCP_HOST_ALLOW`) and `FREESWITCH_ESL_HOST` was set.
 
 If you set them in your MCP client config, the usual cause is that the client
 wasn't fully restarted, or the JSON has a syntax error and the client silently
@@ -91,3 +91,29 @@ itself starts, which splits the problem in half.
 Be more specific about what you want to know rather than which command to run.
 "Is 1001 registered" beats "check the endpoints" because it maps onto exactly
 one tool.
+
+## "no_target_selected"
+
+More than one Asterisk target is configured (or only `PBX_MCP_HOST_ALLOW` is
+set) and none has been chosen. Call `pbx_list_targets`, then `pbx_select_target`
+with a `name`. Nothing was sent to any Asterisk.
+
+## "Permission denied"
+
+The AMI user's `write` list lacks a class the tool needs: `system,reporting`
+for channels and endpoints, `call` for hangup and the Call-ID columns. Add them
+in `manager.conf` and run `manager reload`. This is reported as an error on
+purpose; earlier versions showed an empty list.
+
+## "timed out" or "incomplete list"
+
+An answer did not finish within `PBX_MCP_TIMEOUT_MS` (default 10000). The
+connect, the login and each command each have this limit, so a dead or very
+slow Asterisk returns an error rather than hanging. "Incomplete list" means the
+list started but Asterisk never sent its end marker.
+
+## "target ... is read-only" or "Provisioning is not enabled for target"
+
+Ad hoc targets and targets marked `readOnly` refuse every write. A file target
+has `provision: false` until its entry says otherwise, and the global
+`PBX_MCP_TRUNK_ALLOW`/`PBX_MCP_CONTEXT_ALLOW` apply only to the `default` target.
