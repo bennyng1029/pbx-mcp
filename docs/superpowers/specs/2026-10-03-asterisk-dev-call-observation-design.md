@@ -2,7 +2,7 @@
 
 Date: 2026-10-03. Branch: `feat/asterisk-dev-call-observation`.
 
-Status: architectural spec for owner review. This wave currently authorizes investigation and specification. Runtime implementation, real calls, and remote configuration changes have not been performed. Live SIP acceptance is currently blocked by the absence of a valid ingress endpoint and remains pending separate provisioning and execution authorization; this document does not require another approval for lab checks already covered by an eventual implementation approval.
+Status: owner approved on 2026-10-03; implementation planning authorized. Runtime implementation, real calls, and remote configuration changes have not been performed. Live SIP acceptance is currently blocked by the absence of a valid ingress endpoint and remains pending separate provisioning and execution authorization; this document does not require another approval for lab checks already covered by an eventual implementation approval.
 
 ## Objective
 
@@ -225,7 +225,7 @@ After owner acceptance, produce a reviewed implementation plan and fresh-context
 
 Fresh Cycle A1 (completeness and feasibility) and Cycle B1 (architecture and assumptions) returned REVISE. The ingress prerequisite, bounded bootstrap action collection, and bounded gap metadata were corrected by a fresh revision worker. Fresh independent Cycle A2 and Cycle B2 reviewers then returned APPROVE with no remaining blocking findings. Reviews inspected the document and relevant source; they did not run tests or live calls. Graphify evidence was refreshed separately after a graph became available.
 
-Specification closeout: investigation and this reviewed document are the delivered scope. No runtime code or fixture configuration was changed, and no test calls were placed. Build and functional checks remain acceptance requirements for later implementation. No graphify update is required for this spec-only wave because no code changed. Owner approval of this written spec remains pending; the reviews above approve its consistency and feasibility, not implementation execution.
+Specification closeout: investigation and this reviewed document are the delivered scope. No runtime code or fixture configuration was changed, and no test calls were placed. Build and functional checks remain acceptance requirements for later implementation. No graphify update is required for this spec-only wave because no code changed. The owner approved this written spec on 2026-10-03 and authorized a pseudocode-only implementation plan with self-review. The reviews above approve its consistency and feasibility; runtime implementation remains a later stage.
 
 ## Primary protocol references
 
