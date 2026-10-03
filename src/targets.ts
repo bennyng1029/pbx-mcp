@@ -10,7 +10,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { z } from "zod";
 import { AmiClient } from "./ami.js";
-import type { Config } from "./config.js";
+import { cidrBlockList, ipLiteral, type Config } from "./config.js";
 import { lazyClient } from "./lazy-client.js";
 import { assertPjsipFile, Provisioner } from "./provision.js";
 
@@ -56,7 +56,7 @@ const entrySchema = z
     password: z.string().min(1).optional(),
     passwordEnv: z.string().min(1).optional(),
     label: z.string().optional(),
-    readOnly: z.boolean().default(false),
+    readOnly: z.boolean().default(true),
     provision: z.boolean().default(false),
     pjsipFile: z.string().optional(),
     trunkAllow: z.array(z.string()).default([]),
@@ -101,6 +101,9 @@ export function loadTargets(
     raw = JSON.parse(fs.readFileSync(file, "utf8"));
     if (mode & 0o077 && JSON.stringify(raw).includes('"password"')) {
       warn(`pbx-mcp: ${file} holds literal passwords and is readable by group/other; chmod 600 it or use passwordEnv.`);
+    }
+    if (mode & 0o022) {
+      warn(`pbx-mcp: ${file} is writable by group/other; chmod 600 or 644 it.`);
     }
   } catch (err) {
     // JSON.parse messages quote file content, so never pass them on.
@@ -151,35 +154,6 @@ export function loadTargets(
   return out;
 }
 
-/** Normalise an IP literal for the allow check; undefined when it is not an acceptable IP literal. */
-function ipLiteral(host: string): string | undefined {
-  if (host.includes("%") || !net.isIP(host)) return undefined;
-  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
-  if (dotted && net.isIPv4(dotted[1])) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
-  if (hex) {
-    const a = parseInt(hex[1], 16);
-    const b = parseInt(hex[2], 16);
-    return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
-  }
-  return host;
-}
-
-function hostAllowList(entries: string[]): net.BlockList {
-  const list = new net.BlockList();
-  for (const entry of entries) {
-    const [base, bits, ...extra] = entry.split("/");
-    const family = net.isIPv4(base) ? "ipv4" : net.isIPv6(base) ? "ipv6" : undefined;
-    const max = family === "ipv4" ? 32 : 128;
-    if (!family || extra.length || (bits !== undefined && !(/^\d{1,3}$/.test(bits) && Number(bits) <= max))) {
-      throw new Error(`PBX_MCP_HOST_ALLOW entry "${entry}" is not a valid CIDR.`);
-    }
-    if (bits === undefined) list.addAddress(base, family);
-    else list.addSubnet(base, Number(bits), family);
-  }
-  return list;
-}
-
 export type SelectArgs = { name: string } | { host: string; port?: number; tls?: boolean };
 
 interface Held {
@@ -205,7 +179,7 @@ export class TargetRegistry {
     if (opts.adhocPorts.some((p) => !Number.isInteger(p) || p < 1 || p > 65535)) {
       throw new Error("PBX_MCP_ADHOC_PORTS must be a comma-separated list of ports (1-65535).");
     }
-    this.allow = hostAllowList(opts.hostAllow);
+    this.allow = cidrBlockList(opts.hostAllow, "PBX_MCP_HOST_ALLOW");
     for (const e of entries) {
       const held = this.hold(e, false);
       this.named.set(e.name, held);

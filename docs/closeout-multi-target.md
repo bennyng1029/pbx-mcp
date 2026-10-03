@@ -10,6 +10,19 @@ Blocking findings: C2=0 C3=2 C4=1 C5=0
 Cycle 3 (Opus): 2 blocking (zero-endpoints reply modelled wrongly, missing connect-phase test), both fixed. Cycle 4 (codex): 1 blocking (ad hoc eviction race), fixed with a regression test. Cycle 5 (Opus): none blocking; hardening fixed (CIDR extra slashes, ad hoc TLS follows env, newline channel names).
 Planning-phase cycle counts (A/B/C) are in the planning session's record, not re-stated here.
 
-Live verification: docs/verification/baseline.md, task1.md, task4-probe.md, final.md. Open owner action: the lab AMI user needs write system,call,reporting for the channels, endpoints, hangup and Call-ID rows (CF-001). Graphify is not installed, so Rule 13a was skipped.
+Live verification: docs/verification/baseline.md, task1.md, task4-probe.md, final.md. The lab AMI permissions were fixed afterwards and the blocked rows re-run and passed (final.md). Graphify is not installed, so Rule 13a was skipped.
 
-Owner decision 2026-10-03: the BLOCKED live rows (channels, endpoints, hangup_preview, hangup, Call-ID cross-check) are accepted as carry-forward CF-001; the owner follows up manually. Wave closed.
+Owner decision 2026-10-03: the BLOCKED live rows were accepted as carry-forward CF-001, then the lab AMI permissions were fixed and the rows re-run live and passed (docs/verification/final.md). Wave closed.
+
+## Carry-forward follow-up (2026-10-03)
+
+All carry-forward items CF-001 through CF-008 have been resolved:
+- **CF-001**: Lab AMI permissions updated in `manager.conf` on 192.168.10.244 (`read = system,call,reporting,command,config`, `write = system,call,reporting,command,config,originate`) and reloaded.
+- **CF-002**: Strict schemas and `target` argument validation on `asterisk_originate`, `asterisk_hangup`, and `asterisk_cli`.
+- **CF-003**: Default `readOnly: true` on file targets; warning on group/world-writable targets file.
+- **CF-004**: Read CLI allowlist tightened (removed `database show`/`get`, blocked `pjsip show/list auth`).
+- **CF-005**: Reconciled Decision 1 to reflect independent `PBX_MCP_ALLOW_PROVISION` gating.
+- **CF-006**: Consolidated canonical CIDR matcher using `net.BlockList`.
+- **CF-007**: AMI Error responses returned as tool errors (`isError: true`) for `originate` and `hangup`.
+- **CF-008**: Added 1 MB buffer limit (`MAX_AMI_BUFFER`) and 128-char cap + sanitization on channel cells.
+Test suite: 127 pass, 2 opt-in skipped.

@@ -32,6 +32,12 @@ const CHANNEL_VARS: Array<[string, string]> = [
 const ENRICH_CHANNELS = 20;
 const ENRICH_CONCURRENCY = 8;
 
+const MAX_CELL_LEN = 128;
+function sanitizeCell(val: string): string {
+  const clean = val.replace(/[\r\n\x00-\x1f\x7f]/g, " ").trim();
+  return clean.length > MAX_CELL_LEN ? `${clean.slice(0, MAX_CELL_LEN - 3)}...` : clean;
+}
+
 /**
  * Fill Call-ID/From/To/Diversion on the first channels. Every failure (Getvar refused, no such
  * header, not a PJSIP channel, budget spent) leaves that cell unset, so it renders as n/a; this
@@ -52,7 +58,9 @@ async function enrichChannels(ami: AmiClient, rows: AmiMessage[], budgetMs: numb
         }
         try {
           const res = (await ami.action({ Action: "Getvar", Channel: row.Channel, Variable: variable }, left))[0] ?? {};
-          if ((res.Response ?? "").toLowerCase() === "success" && res.Value?.trim()) row[column] = res.Value.trim();
+          if ((res.Response ?? "").toLowerCase() === "success" && res.Value?.trim()) {
+            row[column] = sanitizeCell(res.Value);
+          }
         } catch {
           // Rendered as n/a; a lookup cut short by the shared budget is reported in a note.
           if (Date.now() >= deadline - 5) spent = true;
@@ -293,14 +301,20 @@ export function registerAsteriskTools(
         "Run a command through the Asterisk CLI and return its raw output. " +
         "In the default read-only mode only inspection commands such as 'core show', 'pjsip show' " +
         "and 'queue show' are permitted. Set PBX_MCP_ALLOW_WRITE=true to lift that restriction.",
-      inputSchema: {
-        command: z.string().describe("The CLI command, for example 'pjsip show endpoints' or 'queue show support'."),
-      },
+      inputSchema: z
+        .object({
+          command: z.string().describe("The CLI command, for example 'pjsip show endpoints' or 'queue show support'."),
+          target: z.string().optional().describe("Name of the target to run the command on; must match the selected target if provided."),
+        })
+        .strict(),
       annotations: { readOnlyHint: !write, destructiveHint: write, openWorldHint: true },
     },
-    async ({ command }) => {
+    async ({ command, target: targetArg }: { command: string; target?: string }) => {
       try {
         const target = getSnapshot();
+        if (targetArg !== undefined && target.name !== undefined && targetArg !== target.name) {
+          return text(`Refused. target "${targetArg}" is not the selected target "${target.name}"; nothing was sent.`, true);
+        }
         const policy = checkAsteriskCommand(command, write && !target.readOnly);
         if (!policy.allowed) {
           // On a read-only target say so only when write mode would have allowed the command.
@@ -327,9 +341,11 @@ export function registerAsteriskTools(
         "channel argument as asterisk_hangup and reports the exact match plus any near misses, " +
         "so you can see the blast radius before dropping a call. Always available, including in " +
         "read-only mode.",
-      inputSchema: {
-        channel: z.string().describe("Channel name, exact or partial, for example 'PJSIP/1001-0000000a' or just '1001'."),
-      },
+      inputSchema: z
+        .object({
+          channel: z.string().describe("Channel name, exact or partial, for example 'PJSIP/1001-0000000a' or just '1001'."),
+        })
+        .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ channel }) => {
@@ -395,18 +411,31 @@ export function registerAsteriskTools(
       description:
         "Originate a call from a channel to an extension in a context. This places a real call " +
         "and costs real money on a live trunk. Only available when PBX_MCP_ALLOW_WRITE=true.",
-      inputSchema: {
-        channel: z.string().describe("Originating channel, for example 'PJSIP/1001' or 'Local/1001@from-internal'."),
-        extension: z.string().describe("Extension to connect the answered call to."),
-        context: z.string().default("default").describe("Dialplan context for the extension."),
-        callerId: z.string().optional().describe("Caller ID to present, for example 'Support <1000>'."),
-        timeoutSeconds: z.number().int().min(1).max(300).default(30).describe("How long to ring before giving up."),
-      },
+      inputSchema: z
+        .object({
+          channel: z.string().describe("Originating channel, for example 'PJSIP/1001' or 'Local/1001@from-internal'."),
+          extension: z.string().describe("Extension to connect the answered call to."),
+          context: z.string().default("default").describe("Dialplan context for the extension."),
+          callerId: z.string().optional().describe("Caller ID to present, for example 'Support <1000>'."),
+          timeoutSeconds: z.number().int().min(1).max(300).default(30).describe("How long to ring before giving up."),
+          target: z.string().optional().describe("Name of the selected target; must match the selected target if provided."),
+        })
+        .strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async ({ channel, extension, context, callerId, timeoutSeconds }) => {
+    async ({ channel, extension, context, callerId, timeoutSeconds, target: targetArg }: {
+      channel: string;
+      extension: string;
+      context: string;
+      callerId?: string;
+      timeoutSeconds: number;
+      target?: string;
+    }) => {
       try {
         const target = getSnapshot();
+        if (targetArg !== undefined && target.name !== undefined && targetArg !== target.name) {
+          return text(`Refused. target "${targetArg}" is not the selected target "${target.name}"; nothing was sent.`, true);
+        }
         if (target.readOnly) return refuseReadOnly(target);
         for (const [label, value] of Object.entries({ channel, extension, context, callerId: callerId ?? "" })) {
           assertNoHeaderInjection(label, value);
@@ -426,9 +455,11 @@ export function registerAsteriskTools(
 
         const res = await ami.action(fields, (timeoutSeconds + 5) * 1000);
         const first = res[0] ?? {};
+        const isError = (first.Response ?? "").toLowerCase() === "error";
         return text(
           `${first.Response ?? "Unknown"}: ${first.Message ?? "no message"}\n` +
-            `Originated ${channel} towards ${extension}@${context}.`
+            `Originated ${channel} towards ${extension}@${context}.`,
+          isError
         );
       } catch (err) {
         return toolError(err);
@@ -443,20 +474,30 @@ export function registerAsteriskTools(
       description:
         "Terminate an active channel by name. Get exact channel names from asterisk_channels first. " +
         "Only available when PBX_MCP_ALLOW_WRITE=true.",
-      inputSchema: {
-        channel: z.string().describe("Exact channel name as reported by asterisk_channels."),
-      },
+      inputSchema: z
+        .object({
+          channel: z.string().describe("Exact channel name as reported by asterisk_channels."),
+          target: z.string().optional().describe("Name of the selected target; must match the selected target if provided."),
+        })
+        .strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async ({ channel }) => {
+    async ({ channel, target: targetArg }: { channel: string; target?: string }) => {
       try {
         const target = getSnapshot();
+        if (targetArg !== undefined && target.name !== undefined && targetArg !== target.name) {
+          return text(`Refused. target "${targetArg}" is not the selected target "${target.name}"; nothing was sent.`, true);
+        }
         if (target.readOnly) return refuseReadOnly(target);
         assertNoHeaderInjection("channel", channel);
         const ami = await target.getClient();
         const res = await ami.action({ Action: "Hangup", Channel: channel });
         const first = res[0] ?? {};
-        return text(`${first.Response ?? "Unknown"}: ${first.Message ?? `Hangup requested for ${channel}.`}`);
+        const isError = (first.Response ?? "").toLowerCase() === "error";
+        return text(
+          `${first.Response ?? "Unknown"}: ${first.Message ?? `Hangup requested for ${channel}.`}`,
+          isError
+        );
       } catch (err) {
         return toolError(err);
       }

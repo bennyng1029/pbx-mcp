@@ -23,8 +23,8 @@ Then add a user. Give it the least it needs:
 secret = pick-something-long
 deny = 0.0.0.0/0.0.0.0
 permit = 192.168.1.0/255.255.255.0
-read = system,call,command
-write = system,call,reporting,command
+read = system,call,reporting,command,config
+write = system,call,reporting,command,config,originate
 ```
 
 Change the `permit` line to the subnet your laptop is on. The `deny` line
@@ -39,14 +39,13 @@ The permissions break down like this:
 | `read = command` | Reading CLI output |
 | `write = command` | Sending CLI commands at all |
 | `write = system,reporting` | Channel and endpoint listings (`CoreShowChannels`, `PJSIPShowEndpoints`) |
-| `write = call` | Hangup, and the Call-ID/From/To/Diversion columns of `asterisk_channels` |
+| `write = call` | Hangup, and the Call-ID/From/To/Diversion columns of `asterisk_channels` (`Getvar`) |
+| `write = originate` | Call control (`asterisk_originate`) |
+| `write = config` | Trunk and extension provisioning (`UpdateConfig`) |
 
 Asterisk checks an action against the user's `write` list, so the listing tools
 need those classes in `write` even though they only read. Without them the tool
 reports `Permission denied`.
-
-If you plan to turn on [call control](call-control.md) later, add `originate`
-to both the read and write lists. Don't add it yet.
 
 Reload and confirm:
 

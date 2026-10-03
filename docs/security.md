@@ -35,12 +35,20 @@ and hostnames are not accepted (use a named target).
 
 **Targets file.** Prefer `passwordEnv` to a literal password, and keep the file
 `chmod 600` (pbx-mcp warns if a file with literal passwords is readable by
-group or others). The provisioning gates (`provision`, `trunkAllow`,
-`contextAllow`, `pjsipFile`) can only come from the operator's file or
+group or others, or if the file is writable by group/other). File targets default
+to read-only (`readOnly: true`); explicit `readOnly: false` is required to allow
+writes or provisioning on a named file target. The provisioning gates (`provision`,
+`trunkAllow`, `contextAllow`, `pjsipFile`) can only come from the operator's file or
 environment, never from a tool argument, and file targets start with
 provisioning off.
 
-**Name the environment before provisioning.** Trunk and extension create and
-delete go to the selected target. Confirm which environment is meant before
-approving a write; the `target` argument and the `Target:` line in every result
-exist so a lab approval is not mistaken for a production one.
+**Name the environment before writing or provisioning.** Write tools (`asterisk_originate`,
+`asterisk_hangup`, `asterisk_cli`) and provisioning mutators validate an explicit `target`
+argument against the selected target (with strict schemas that reject unknown keys).
+Confirm which environment is meant before approving a write; the `target` argument
+and the `Target:` line in every result exist so a lab approval is not mistaken for a production one.
+
+**Input sanitization and buffer caps.** Incoming AMI traffic is subject to a 1 MB buffer cap
+to protect against memory exhaustion from uncooperative peers. SIP header fields retrieved
+in `asterisk_channels` (Call-ID, From, To, Diversion) are capped to 128 characters and stripped
+of newlines/control characters to mitigate prompt injection risks.

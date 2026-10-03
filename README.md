@@ -80,8 +80,8 @@ Asterisk authorises each AMI action against the user's **write** permission, so 
 ```ini
 [mcp]
 secret = change-me
-read = system,call,command
-write = system,call,reporting,command
+read = system,call,reporting,command,config
+write = system,call,reporting,command,config,originate
 ```
 
 ### Several Asterisk servers (targets)
@@ -94,11 +94,11 @@ One server process can drive several lab Asterisk boxes. The agent picks one at 
 | `PBX_MCP_HOST_ALLOW` | *(unset)* | Comma-separated CIDRs an **ad hoc** target IP must be inside. Unset means ad hoc is disabled. Keep it narrow |
 | `PBX_MCP_ADHOC_PORTS` | `5038` | Ports an ad hoc target may use |
 
-- A target is `host`, `port`, `username`, and `passwordEnv` (name of an environment variable, preferred) or `password`, plus optional `label`, `tls`, `readOnly`, `dialplanHint` and the provisioning gates `provision`, `pjsipFile`, `trunkAllow`, `contextAllow`. A literal password in a file readable by group or others logs a warning at start-up; use `chmod 600`. Secrets are never printed in output or errors.
-- With only `ASTERISK_AMI_HOST` set, nothing changes: that is the target `default`. With a file as well, the targets are `default` plus the file's, and the agent must select one (`no_target_selected` until it does). One target needs no selection. A file target may not be named `default`.
+- A target is `host`, `port`, `username`, and `passwordEnv` (name of an environment variable, preferred) or `password`, plus optional `label`, `tls`, `readOnly` (defaults to `true`), `dialplanHint` and the provisioning gates `provision`, `pjsipFile`, `trunkAllow`, `contextAllow`. A literal password in a file readable by group or others, or a group/world-writable targets file, logs a warning at start-up; use `chmod 600`. Secrets are never printed in output or errors.
+- With only `ASTERISK_AMI_HOST` set, nothing changes: that is the target `default` (writable when write mode is enabled). With a file as well, the targets are `default` plus the file's, and the agent must select one (`no_target_selected` until it does). One target needs no selection. A file target may not be named `default`.
 - `pbx_list_targets`, `pbx_get_target` and `pbx_select_target` (a `name`, or an ad hoc `host` with optional `port` and `tls`). The tool schemas are strict: credentials and provisioning gates can never be passed as arguments.
 - **Ad hoc targets** are for a quick look at a box that is not in the file. The host must be an **IP literal** inside `PBX_MCP_HOST_ALLOW` (hostnames need a named target), the port must be in `PBX_MCP_ADHOC_PORTS`, the **default `ASTERISK_AMI_USERNAME`/`ASTERISK_AMI_PASSWORD` are sent to it in plaintext** (AMI is plaintext on 5038 and TLS verification is off), and it is always read-only. Only one ad hoc connection stays open at a time.
-- **Writes** (originate, hangup, non-read CLI, trunk and extension create/delete) need `PBX_MCP_ALLOW_WRITE=true` (or `PBX_MCP_ALLOW_PROVISION=true`) **and** a selected target that permits them. A `readOnly` target and every ad hoc target refuse them.
+- **Writes** (originate, hangup, non-read CLI, trunk and extension create/delete) need `PBX_MCP_ALLOW_WRITE=true` (or `PBX_MCP_ALLOW_PROVISION=true`) **and** a selected target that permits them (`readOnly: false`). A `readOnly` target and every ad hoc target refuse them. Write tools also accept an optional `target` argument that must match the selected target (or reject mismatched targets with strict schemas).
 - A command or list that does not finish within `PBX_MCP_TIMEOUT_MS` is an error, and a list that starts but never completes is reported as incomplete rather than shortened. An unreachable Asterisk returns a clear error promptly.
 
 ### FreeSWITCH
@@ -211,7 +211,7 @@ Each `-e NAME` with no value forwards that variable from `env` into the containe
 
 A PBX is not a scratch pad. Reloading a profile drops registrations, and an originate spends real money on a live trunk. So the default posture is read-only and the guards are layered:
 
-**Read-only by default.** `asterisk_cli` accepts an allow list of inspection prefixes (`core show`, `pjsip show`, `dialplan show`, `queue show` and friends). `freeswitch_api` accepts the same kind of list (`status`, `show`, `sofia status`, `db list` and friends), matched on the start of the command so the subcommand counts.
+**Read-only by default.** `asterisk_cli` accepts an allow list of inspection prefixes (`core show`, `pjsip show`, `dialplan show`, `queue show` and friends). Commands that expose credentials (such as `pjsip show auth` or `database show`) are restricted to write mode. `freeswitch_api` accepts the same kind of list (`status`, `show`, `sofia status`, `db list` and friends), matched on the start of the command so the subcommand counts.
 
 **The FreeSWITCH list allows subcommands, it does not deny scary words.** `sofia status` reads, `sofia profile internal restart` isn't on the list, so it's refused. This used to work the other way around, scanning each word against a list of state changing verbs, and that only ever catches the words somebody thought of. `conference 3001 kick all` walked straight through it. Reported by `Electrical-Place-458` on r/mcp.
 

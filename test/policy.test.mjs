@@ -107,3 +107,10 @@ test("Asterisk: shell metacharacters are refused even in write mode", () => {
     assert.equal(checkAsteriskCommand(cmd, true).allowed, false, `${cmd} should be refused`);
   }
 });
+
+test("Asterisk: auth and database dumps are refused in read mode, allowed in write mode", () => {
+  for (const cmd of ["pjsip show auth 1001", "pjsip show auths", "pjsip list auths", "database show", "database get key"]) {
+    assert.equal(astRead(cmd), false, `${cmd} should be refused in read mode`);
+    assert.equal(checkAsteriskCommand(cmd, true).allowed, true, `${cmd} should be allowed in write mode`);
+  }
+});

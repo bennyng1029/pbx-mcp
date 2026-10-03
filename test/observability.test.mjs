@@ -161,3 +161,20 @@ test("enrichment stops at the overall budget", async () => {
   assert.ok(out.includes(CALL_ID), "lookups that finished in time still show");
   assert.ok(/n\/a/.test(out));
 });
+
+test("CF-008: channel cells are capped and sanitized against injection", async () => {
+  const c = chan(1);
+  const hugeHeader = "A".repeat(300) + "\r\nDROP ALL TABLES\n";
+  const { h } = await setup({
+    channels: [c],
+    vars: {
+      [`${c.Channel}|CHANNEL(pjsip,call-id)`]: "call-1",
+      [`${c.Channel}|PJSIP_HEADER(read,From)`]: hugeHeader,
+      [`${c.Channel}|PJSIP_HEADER(read,To)`]: "<sip:bob@example.com>",
+      [`${c.Channel}|PJSIP_HEADER(read,Diversion)`]: "",
+    },
+  });
+  const out = (await h.asterisk_channels({})).content[0].text;
+  assert.ok(!out.includes("DROP ALL TABLES\n"), "newlines and injection text sanitized");
+  assert.ok(out.includes("A".repeat(120) + "..."), "cell length capped to 128 chars");
+});

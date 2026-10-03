@@ -38,3 +38,17 @@ The owner accepted the BLOCKED rows as carry-forward CF-001 and will re-run them
 ## Owner action
 
 The BLOCKED rows need one `manager.conf` change on the lab Asterisk: for the `mcp` user, `write = system,call,reporting,command,config,originate`, then `manager reload`. Then re-run channels, endpoints, hangup_preview, hangup and the Call-ID cross-check; or carry them forward.
+
+### Owner action completed and the blocked rows re-run (2026-10-03)
+
+The `manager.conf` change was applied on 192.168.10.244 (`read = system,call,reporting,command,config`, `write = system,call,reporting,command,config,originate`) and reloaded; `manager show user mcp` confirms it. The five formerly BLOCKED rows were then re-run on the current build (env-only `default` target, `vfy-1001`, deleted afterwards):
+
+| Row | Result | Evidence |
+|---|---|---|
+| asterisk_endpoints with a registered contact | PASS | `mcp-vfy-1001  In use  mcp-vfy-1001/sip:mcp-vfy-1001@192.168.10.120:5060` |
+| asterisk_channels during a live call | PASS | `PJSIP/mcp-vfy-1001-00000004 Up ... 00:00:07` |
+| asterisk_hangup_preview | PASS | no exact match for the partial name; the channel listed under "containing that string" |
+| asterisk_hangup | PASS | `Success: Channel Hungup`; sipclient ladder shows `BYE` from Asterisk, `200 OK`; channels empty afterwards |
+| Call-ID / From / To / Diversion | PASS | tool Call-ID `H3tG2QIxz3@192.168.10.120` equals sipclient `sip_call_id`; From, To and `<sip:5551234@example.com>;reason=unconditional` shown |
+
+CF-001 to CF-008 resolved; `vfy-1001` deleted, UA destroyed, no channels left.

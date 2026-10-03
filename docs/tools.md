@@ -44,8 +44,9 @@ Good for "where would a call to 5551234 actually go" before you place it.
 
 **`asterisk_cli`** - Any CLI command. In read-only mode it accepts an allow
 list of inspection prefixes: `core show`, `pjsip show`, `dialplan show`,
-`queue show`, `database show`, and about twenty more. Prefix matching means
-`core show channels verbose` passes under `core show`.
+`queue show`, and about twenty more (commands exposing authentication secrets
+like `pjsip show auth` or `database show` are restricted to write mode). Prefix matching means
+`core show channels verbose` passes under `core show`. Accepts an optional `target` argument.
 
 **`asterisk_trunk_create`, `asterisk_trunk_delete`, `asterisk_extension_create`,
 `asterisk_extension_delete`** *(provisioning)* - Take a `target` argument that
@@ -55,11 +56,13 @@ the environment you confirmed is the one that is written. Results start with
 
 **`asterisk_originate`** *(write mode)* - Places a call from a channel to an
 extension. Async, so it returns as soon as the switch accepts it rather than
-waiting for an answer.
+waiting for an answer. Accepts an optional `target` argument matching the selected target.
+Reports AMI errors (such as `Permission denied`) as tool errors.
 
 **`asterisk_hangup`** *(write mode)* - Drops a channel by exact name. Get the
 name from `asterisk_channels` first; a guessed name either fails or hangs up
-the wrong call.
+the wrong call. Accepts an optional `target` argument matching the selected target.
+Reports AMI errors as tool errors.
 
 ## FreeSWITCH
 

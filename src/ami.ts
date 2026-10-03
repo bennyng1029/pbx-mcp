@@ -21,6 +21,8 @@ export interface AmiOptions {
 
 /** AMI terminates every message with a blank line. */
 const MSG_END = "\r\n\r\n";
+/** Cap on unparsed incoming buffer to protect against unbounded buffering from a hostile/misbehaving peer. */
+export const MAX_AMI_BUFFER = 1024 * 1024;
 
 export class AmiError extends Error {}
 
@@ -133,6 +135,12 @@ export class AmiClient {
     }
 
     this.buffer += chunk;
+    if (this.buffer.length > MAX_AMI_BUFFER) {
+      this.buffer = "";
+      this.close();
+      return;
+    }
+
     let idx: number;
     while ((idx = this.buffer.indexOf(MSG_END)) !== -1) {
       const raw = this.buffer.slice(0, idx);

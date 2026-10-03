@@ -15,7 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { AmiClient, AmiMessage } from "./ami.js";
-import { assertNoHeaderInjection } from "./config.js";
+import { assertNoHeaderInjection, cidrBlockList } from "./config.js";
 
 export const PREFIX = "mcp-";
 export const CODECS = ["ulaw", "alaw", "g722", "g729", "opus"] as const;
@@ -73,20 +73,6 @@ export function assertSafeValue(label: string, value: string): void {
   if (/[;#=]/.test(value)) throw new Error(`${label} may not contain ';', '#' or '='.`);
 }
 
-function ipv4ToInt(ip: string): number {
-  return ip.split(".").reduce((acc, o) => acc * 256 + Number(o), 0);
-}
-
-/** Is `ip` inside the CIDR (bare IPv4 means /32)? Throws on a malformed entry. */
-function inCidr(ip: string, entry: string): boolean {
-  const [base, bits = "32"] = entry.split("/");
-  if (!IPV4.test(base) || !/^\d{1,2}$/.test(bits) || Number(bits) > 32) {
-    throw new Error(`PBX_MCP_TRUNK_ALLOW entry "${entry}" is not a valid IPv4 CIDR.`);
-  }
-  const size = 2 ** (32 - Number(bits));
-  return Math.floor(ipv4ToInt(ip) / size) === Math.floor(ipv4ToInt(base) / size);
-}
-
 /**
  * Fail closed: an empty allowlist refuses everything. Hostnames are matched
  * literally and never resolved, so DNS cannot be used to slip past the list.
@@ -95,13 +81,18 @@ export function assertTrunkAllowed(host: string, allow: string[]): void {
   if (!allow.length) {
     throw new Error("Trunk creation is disabled: PBX_MCP_TRUNK_ALLOW is not set.");
   }
+  const ipEntries = allow.filter((e) => e.includes("/") || IPV4.test(e));
+  const blockList = ipEntries.length ? cidrBlockList(ipEntries, "PBX_MCP_TRUNK_ALLOW") : undefined;
+
   const isIp = IPV4.test(host);
-  const permitted = allow.some((entry) => {
-    const looksLikeIp = entry.includes("/") || IPV4.test(entry);
-    if (looksLikeIp) return isIp && inCidr(host, entry);
-    return !isIp && entry.toLowerCase() === host.toLowerCase();
-  });
-  if (!permitted) throw new Error(`Host "${host}" is not on the PBX_MCP_TRUNK_ALLOW list.`);
+  if (isIp) {
+    if (!blockList?.check(host, "ipv4")) {
+      throw new Error(`Host "${host}" is not on the PBX_MCP_TRUNK_ALLOW list.`);
+    }
+  } else {
+    const permitted = allow.some((entry) => !entry.includes("/") && !IPV4.test(entry) && entry.toLowerCase() === host.toLowerCase());
+    if (!permitted) throw new Error(`Host "${host}" is not on the PBX_MCP_TRUNK_ALLOW list.`);
+  }
 }
 
 export function assertContextAllowed(context: string, allow: string[]): void {

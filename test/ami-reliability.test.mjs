@@ -298,3 +298,17 @@ test("true empty channel list still says No active channels", async () => {
   assert.match(bodyOf(r), /No active channels/);
   assert.equal(r.isError, undefined);
 });
+
+test("CF-008: unbounded data without message boundary resets connection at MAX_AMI_BUFFER", async () => {
+  const m = await mock();
+  const c = newClient(m, 1000);
+  await c.connect();
+  open.push(c);
+  assert.equal(c.isConnected, true);
+
+  // Send a chunk exceeding MAX_AMI_BUFFER (1MB) to the socket without MSG_END
+  const socket = [...m.sockets][0];
+  socket.write("X".repeat(1024 * 1024 + 100));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(c.isConnected, false);
+});

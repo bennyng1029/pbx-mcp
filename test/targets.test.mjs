@@ -437,7 +437,7 @@ test("a start-up with only ASTERISK_AMI_HOST set still registers the previous to
 
 import { registerProvisioningTools } from "../dist/tools/provision.js";
 
-const PROV = { provision: true, trunkAllow: ["192.0.2.0/24"], contextAllow: ["mcp-test"] };
+const PROV = { provision: true, readOnly: false, trunkAllow: ["192.0.2.0/24"], contextAllow: ["mcp-test"] };
 const trunk = (o = {}) => ({ name: "t1", host: "192.0.2.10", context: "mcp-test", ...o });
 const ext = (o = {}) => ({ number: "1001", context: "mcp-test", ...o });
 const provServer = (extra = {}) => spawn({ PBX_MCP_ALLOW_PROVISION: "true", ...extra });
@@ -629,4 +629,71 @@ test("an evicted ad hoc target cannot be reopened by a call already in flight", 
 test("a CIDR with extra slashes is rejected", async () => {
   const m = await mock();
   assert.throws(() => reg(ADHOC(m, { PBX_MCP_HOST_ALLOW: "127.0.0.0/8/junk" })), /not a valid CIDR/);
+});
+
+test("CF-003: file targets default to readOnly true", () => {
+  const f = writeTargets({ targets: { ro: entry({ port: 5038 }) } });
+  const r = reg({ PBX_MCP_TARGETS_FILE: f });
+  assert.equal(r.list().find((t) => t.name === "ro").readOnly, true);
+});
+
+test("CF-003: group-writable targets file emits a warning", () => {
+  const warns = [];
+  const f = writeTargets({ targets: { a: entry({ port: 5038 }) } }, 0o664);
+  reg({ PBX_MCP_TARGETS_FILE: f }, (w) => warns.push(w));
+  assert.ok(warns.some((w) => w.includes("writable by group/other")));
+});
+
+test("CF-002: write tools refuse mismatched target argument", async () => {
+  const a = await mock();
+  const b = await mock();
+  const s = await spawn({
+    PBX_MCP_ALLOW_WRITE: "true",
+    PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(a, { readOnly: false }), b: entry(b, { readOnly: false }) } }),
+  });
+  await s.call("pbx_select_target", { name: "a" });
+  for (const [tool, args] of [
+    ["asterisk_originate", { channel: "PJSIP/x", extension: "100", context: "default", target: "b" }],
+    ["asterisk_hangup", { channel: "PJSIP/x", target: "b" }],
+    ["asterisk_cli", { command: "core restart now", target: "b" }],
+  ]) {
+    const r = await s.call(tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(text(r), /not the selected target "a"/, tool);
+  }
+  assert.equal(a.actions().length + b.actions().length, 0);
+});
+
+test("CF-002: write tools reject unknown arguments (strict schema)", async () => {
+  const m = await mock();
+  const s = await spawn({
+    PBX_MCP_ALLOW_WRITE: "true",
+    PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m, { readOnly: false }) } }),
+  });
+  for (const [tool, args] of [
+    ["asterisk_originate", { channel: "PJSIP/x", extension: "100", context: "default", extra: "junk" }],
+    ["asterisk_hangup", { channel: "PJSIP/x", extra: "junk" }],
+    ["asterisk_cli", { command: "core restart now", extra: "junk" }],
+  ]) {
+    const r = await s.call(tool, args);
+    assert.equal(r.isError, true, tool);
+    assert.match(text(r), /unrecognized|unexpected/i, tool);
+  }
+});
+
+test("CF-007: originate and hangup return isError true when AMI returns Error", async () => {
+  const m = await mock({
+    errorFor: { Originate: "Permission denied", Hangup: "Permission denied" },
+  });
+  const s = await spawn({
+    PBX_MCP_ALLOW_WRITE: "true",
+    PBX_MCP_TARGETS_FILE: writeTargets({ targets: { a: entry(m, { readOnly: false }) } }),
+  });
+  const o = await s.call("asterisk_originate", { channel: "PJSIP/x", extension: "100", context: "default" });
+  assert.equal(o.isError, true);
+  assert.match(text(o), /Error: Permission denied/);
+
+  const h = await s.call("asterisk_hangup", { channel: "PJSIP/x" });
+  assert.equal(h.isError, true);
+  assert.match(text(h), /Error: Permission denied/);
 });

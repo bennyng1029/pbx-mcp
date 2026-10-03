@@ -13,6 +13,7 @@
       "username": "mcp",
       "passwordEnv": "LAB_B_AMI_PASSWORD",
       "label": "Lab Asterisk B (provisioning on)",
+      "readOnly": false,
       "provision": true,
       "pjsipFile": "pjsip_mcp.conf",
       "trunkAllow": ["198.51.100.0/24"],

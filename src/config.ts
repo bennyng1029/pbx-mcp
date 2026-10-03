@@ -4,6 +4,8 @@
  * Part of pbx-mcp by Tahir Almas, ICT Innovations (https://ictinnovations.com).
  */
 
+import net from "node:net";
+
 export interface Config {
   asterisk?: {
     host: string;
@@ -43,6 +45,37 @@ function list(value: string | undefined): string[] {
 function num(value: string | undefined, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Normalise an IP literal for the allow check; undefined when it is not an acceptable IP literal. */
+export function ipLiteral(host: string): string | undefined {
+  if (host.includes("%") || !net.isIP(host)) return undefined;
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
+  if (dotted && net.isIPv4(dotted[1])) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (hex) {
+    const a = parseInt(hex[1], 16);
+    const b = parseInt(hex[2], 16);
+    return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+  }
+  return host;
+}
+
+/** Parse CIDR entries into a net.BlockList. Throws on malformed entry. */
+export function cidrBlockList(entries: string[], envVarName = "PBX_MCP_HOST_ALLOW"): net.BlockList {
+  const list = new net.BlockList();
+  for (const entry of entries) {
+    const [base, bits, ...extra] = entry.split("/");
+    const family = net.isIPv4(base) ? "ipv4" : net.isIPv6(base) ? "ipv6" : undefined;
+    const max = family === "ipv4" ? 32 : 128;
+    if (!family || extra.length || (bits !== undefined && !(/^\d{1,3}$/.test(bits) && Number(bits) <= max))) {
+      const cidrType = envVarName === "PBX_MCP_TRUNK_ALLOW" ? "IPv4 CIDR" : "CIDR";
+      throw new Error(`${envVarName} entry "${entry}" is not a valid ${cidrType}.`);
+    }
+    if (bits === undefined) list.addAddress(base, family);
+    else list.addSubnet(base, Number(bits), family);
+  }
+  return list;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -93,8 +126,6 @@ export const ASTERISK_READ_PREFIXES = [
   "sip show",
   "iax2 show",
   "dialplan show",
-  "database show",
-  "database get",
   "queue show",
   "voicemail show",
   "manager show",
@@ -162,6 +193,14 @@ export function checkAsteriskCommand(cli: string, allowWrite: boolean): PolicyRe
   }
 
   if (allowWrite) return { allowed: true };
+
+  // Block commands that expose secrets (e.g. SIP passwords in auth sections) even under read prefixes
+  if (/^pjsip\s+(show|list)\s+auth/i.test(cmd)) {
+    return {
+      allowed: false,
+      reason: `"${cli}" exposes authentication secrets and is not permitted in read-only mode. Set PBX_MCP_ALLOW_WRITE=true to permit it.`,
+    };
+  }
 
   const readOnly = ASTERISK_READ_PREFIXES.some((p) => cmd === p || cmd.startsWith(p + " "));
   if (readOnly) return { allowed: true };
