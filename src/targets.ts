@@ -7,6 +7,9 @@
  */
 
 import fs from "node:fs";
+import { performance } from "node:perf_hooks";
+import { CallObserver } from "./call-observation.js";
+import { loadFixtureExpectations, type FixtureExpectation, type FixtureExpectations } from "./fixture.js";
 import net from "node:net";
 import { z } from "zod";
 import { AmiClient } from "./ami.js";
@@ -45,6 +48,8 @@ export interface Identity {
 }
 export interface Snapshot extends Identity {
   getClient: () => Promise<AmiClient>;
+  getObserver: () => CallObserver;
+  fixtureExpectation?: FixtureExpectation;
 }
 
 const entrySchema = z
@@ -159,12 +164,14 @@ export type SelectArgs = { name: string } | { host: string; port?: number; tls?:
 interface Held {
   entry: TargetEntry;
   get: () => Promise<AmiClient>;
-  clients: AmiClient[];
+  controller: AbortController;
+  observer?: CallObserver;
   adhoc: boolean;
   evicted: boolean;
 }
 
 export class TargetRegistry {
+  private closed = false;
   private named = new Map<string, Held>();
   private adhoc?: Held;
   private selected?: Held;
@@ -174,7 +181,7 @@ export class TargetRegistry {
 
   constructor(
     entries: TargetEntry[],
-    private opts: { hostAllow: string[]; adhocPorts: number[]; adhocBase?: TargetEntry; timeoutMs: number }
+    private opts: { hostAllow: string[]; adhocPorts: number[]; adhocBase?: TargetEntry; timeoutMs: number; expectations?: FixtureExpectations }
   ) {
     if (opts.adhocPorts.some((p) => !Number.isInteger(p) || p < 1 || p > 65535)) {
       throw new Error("PBX_MCP_ADHOC_PORTS must be a comma-separated list of ports (1-65535).");
@@ -193,14 +200,14 @@ export class TargetRegistry {
   }
 
   private hold(entry: TargetEntry, adhoc: boolean): Held {
-    const held: Held = { entry, adhoc, evicted: false, clients: [], get: undefined as never };
+    const held: Held = { entry, adhoc, evicted: false, controller: new AbortController(), get: undefined as never };
     held.get = lazyClient(
       () => {
         const c = new AmiClient({ host: entry.host, port: entry.port, username: entry.username, password: entry.password, tls: entry.tls, timeoutMs: this.opts.timeoutMs });
-        held.clients.push(c);
         return c;
       },
-      (c) => c.isConnected
+      (c) => c.isConnected,
+      held.controller.signal
     );
     return held;
   }
@@ -225,6 +232,7 @@ export class TargetRegistry {
 
   /** Synchronous: the selection is assigned before the caller can interleave. */
   select(args: SelectArgs): Identity {
+    this.assertOpen();
     if ("name" in args) {
       const held = this.named.get(args.name);
       if (!held) throw new Error(`Unknown target "${args.name}". Known: ${[...this.named.keys()].join(", ") || "none"}.`);
@@ -263,7 +271,7 @@ export class TargetRegistry {
     const h = this.adhoc;
     if (!h) return;
     h.evicted = true;
-    h.clients.forEach((c) => c.close());
+    h.controller.abort();
     this.adhoc = undefined;
     if (this.selected === h) this.selected = undefined;
   }
@@ -273,7 +281,19 @@ export class TargetRegistry {
     return { name: e.name, label: e.label, host: e.host, port: e.port, dialplanHint: e.dialplanHint, readOnly: e.readOnly };
   }
 
+  private assertOpen(): void {
+    if (this.closed) throw new Error("target registry closed");
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const h of this.named.values()) { h.controller.abort(); h.observer?.close(); }
+    this.adhoc?.controller.abort();
+  }
+
   private current(): Held {
+    this.assertOpen();
     if (!this.selected) throw new Error(NO_TARGET);
     return this.selected;
   }
@@ -288,17 +308,40 @@ export class TargetRegistry {
     const h = this.current();
     return {
       ...this.identityOf(h),
+      fixtureExpectation: this.opts.expectations?.[h.entry.name],
+      getObserver: () => {
+        this.assertOpen();
+        if (h.adhoc) throw new Error("named_target_required");
+        h.observer ??= new CallObserver(
+          { name: h.entry.name, label: h.entry.label, host: h.entry.host, port: h.entry.port },
+          (deadline, signal) => {
+            this.assertOpen();
+            if (signal.aborted || deadline <= performance.now()) throw new Error("observation startup cancelled");
+            return lazyClient(() => {
+              this.assertOpen();
+              const remaining = deadline - performance.now();
+              if (signal.aborted || remaining <= 0) throw new Error("observation startup cancelled");
+              return new AmiClient({ host: h.entry.host, port: h.entry.port, username: h.entry.username,
+                password: h.entry.password, tls: h.entry.tls, timeoutMs: remaining });
+            }, c => c.isConnected, signal);
+          }, this.opts.timeoutMs
+        );
+        return h.observer;
+      },
       getClient: async () => {
+        this.assertOpen();
         if (h.evicted) throw new Error("target no longer selected");
         let client: AmiClient;
         try {
           client = await h.get();
         } catch (err) {
+          this.assertOpen();
           throw h.evicted ? new Error("target no longer selected") : err;
         }
         // Eviction can land while the holder was connecting or retrying: never hand out (or leave open) a client of an evicted target.
+        this.assertOpen();
         if (h.evicted) {
-          h.clients.forEach((c) => c.close());
+          h.controller.abort();
           throw new Error("target no longer selected");
         }
         return client;
@@ -319,6 +362,7 @@ export class TargetRegistry {
 /** Build the registry for this process from the already-loaded Config. */
 export function createRegistry(cfg: Config, env: NodeJS.ProcessEnv = process.env, warn?: (m: string) => void): TargetRegistry {
   const entries = loadTargets(cfg, env, warn);
+  const expectations = loadFixtureExpectations(cfg.fixtureExpectationsFile, entries.map(e => e.name));
   // Ad hoc targets reuse the default env credentials, whether or not a default host is set.
   const username = env.ASTERISK_AMI_USERNAME ?? "";
   const password = env.ASTERISK_AMI_PASSWORD ?? "";
@@ -329,5 +373,5 @@ export function createRegistry(cfg: Config, env: NodeJS.ProcessEnv = process.env
           username, password, readOnly: true, provision: false, pjsipFile: cfg.pjsipFile, trunkAllow: [], contextAllow: [],
         }
       : undefined;
-  return new TargetRegistry(entries, { hostAllow: cfg.hostAllow, adhocPorts: cfg.adhocPorts, adhocBase, timeoutMs: cfg.timeoutMs });
+  return new TargetRegistry(entries, { hostAllow: cfg.hostAllow, adhocPorts: cfg.adhocPorts, adhocBase, timeoutMs: cfg.timeoutMs, expectations });
 }

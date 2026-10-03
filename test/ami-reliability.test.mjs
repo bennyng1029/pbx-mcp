@@ -312,3 +312,144 @@ test("CF-008: unbounded data without message boundary resets connection at MAX_A
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(c.isConnected, false);
 });
+
+async function connectedMock(opts = {}) {
+  const m = await mock(opts);
+  const c = newClient(m); open.push(c); await c.connect();
+  return { m, c };
+}
+const bounded = { maxMessages: 130, rowEvent: "CoreShowChannel", maxRows: 128 };
+
+test("command errors preserve raw repeated diagnostic Output, success remains exact", async () => {
+  const { m, c } = await connectedMock();
+  for (const command of ["dialplan show mcp-test", "dialplan show 123@mcp-test"]) {
+    m.rawResponseFor[command] = "Response: Success\r\nMessage: Command output follows\r\nOutput: existing\r\nOutput: extension";
+    assert.equal(await c.command(command), "existing\nextension");
+    m.rawResponseFor[command] = "Response: Error\r\nMessage: Command output follows\r\nOutput: There is no existence\r\nOutput: missing extension";
+    await assert.rejects(c.command(command), e => e instanceof AmiError && /There is no existence\nmissing extension/.test(e.message));
+  }
+  m.rawResponseFor.empty = "Response: Error\r\nOutput: ";
+  await assert.rejects(c.command("empty"), /Asterisk rejected: empty/);
+  m.rawResponseFor.denied = "Response: Error\r\nMessage: Permission denied\r\nOutput: ";
+  await assert.rejects(c.command("denied"), /Permission denied/);
+});
+
+test("bounded actions allow 128 total rows and reject 129 including non-PJSIP immediately", async () => {
+  const { m, c } = await connectedMock({ channels: Array.from({length:128}, () => ({Channel:"Local/1"})) });
+  assert.equal((await c.action({ Action:"CoreShowChannels" }, 1000, bounded)).length, 130);
+  m.channels.push({Channel:"Local/129"}); m.omitComplete = true;
+  const started = Date.now();
+  await assert.rejects(c.action({Action:"CoreShowChannels"}, 2000, bounded), /maxRows|row limit/);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(c.waiters.length, 0);
+  assert.equal((await c.action({Action:"Events"}))[0].Response, "Success");
+  m.omitComplete = false;
+  assert.equal((await c.action({Action:"CoreShowChannels"})).length, 131, "ordinary callers stay unbounded");
+});
+
+test("131st matched message rejects without completion", async () => {
+  const { c } = await connectedMock({ rawResponseFor:{ CoreShowChannels: ["Response: Success\r\nEventList: start", ...Array(130).fill("Event: Other")].join("\r\n\r\n") } });
+  await assert.rejects(c.action({Action:"CoreShowChannels"}, 2000, bounded), /maxMessages|message limit/);
+  assert.equal(c.waiters.length, 0);
+});
+
+test("unsolicited events do not steal list rows and unsubscribe stops delivery", async () => {
+  const { m, c } = await connectedMock({ channels:[{Channel:"PJSIP/1"},{Channel:"PJSIP/2"}], unsolicitedBetweenRows:["Event: Newchannel\r\nUniqueid: 1"] });
+  const events=[]; const unsub=c.subscribeEvents(e => events.push(e));
+  const rows=await c.action({Action:"CoreShowChannels"}, 1000, bounded);
+  assert.equal(rows.length, 4); assert.deepEqual(events.map(e=>e.Event), ["Newchannel"]);
+  unsub(); m.emitEvent({Event:"Hangup"});
+  await new Promise(r=>setTimeout(r,30)); assert.equal(events.length, 1);
+});
+
+test("action abort, timeout, transport close and explicit close immediately remove waiters", async () => {
+  for (const mode of ["abort", "timeout", "transport", "explicit"]) {
+    const { m, c } = await connectedMock({swallowNext:"CoreShowChannels"});
+    const lifecycle=[]; const unsub=c.subscribeLifecycle(reason=>lifecycle.push(reason));
+    const controller=new AbortController();
+    const p=c.action({Action:"CoreShowChannels"}, mode==="timeout"?30:2000, {signal:controller.signal});
+    const rejected=assert.rejects(p, AmiError);
+    if(mode==="abort") controller.abort();
+    if(mode==="transport") for(const sock of m.sockets) sock.destroy();
+    if(mode==="explicit") {c.close();c.close();}
+    await rejected; assert.equal(c.waiters.length,0);
+    if(mode==="explicit"||mode==="transport") { await new Promise(r=>setTimeout(r,20)); assert.equal(lifecycle.length,1); }
+    unsub(); c.close();
+  }
+});
+
+test("pre-aborted and failed writes leave no action waiter", async () => {
+  const {c}=await connectedMock(); const controller=new AbortController(); controller.abort();
+  await assert.rejects(c.action({Action:"Events"},1000,{signal:controller.signal}), /cancel/i);
+  assert.equal(c.waiters.length,0);
+  c.socket.write=()=>{throw new Error("write failed")};
+  await assert.rejects(c.action({Action:"Events"}), /write failed/);
+  assert.equal(c.waiters.length,0);
+});
+
+test("Events refusal is preserved as an Error response and waiter is removed", async () => {
+  const {c}=await connectedMock({errorFor:{Events:"Permission denied"}});
+  const response=await c.action({Action:"Events",EventMask:"call"});
+  assert.equal(response[0].Response,"Error"); assert.equal(response[0].Message,"Permission denied");
+  assert.equal(c.waiters.length,0);
+});
+
+test("asynchronous write failure cancels its timer and waiter", async () => {
+  const {c}=await connectedMock();
+  c.socket.write=(_payload, callback)=>{queueMicrotask(()=>callback(new Error("async write failed")));return false;};
+  await assert.rejects(c.action({Action:"Events"}), /async write failed/);
+  assert.equal(c.waiters.length,0);
+});
+
+test("socket error and input buffer failure reject actions and notify once", async () => {
+  for(const reason of ["socket_error","input_buffer_failure"]) {
+    const {m,c}=await connectedMock({swallowNext:"Events"});
+    const notifications=[]; const unsub=c.subscribeLifecycle(r=>notifications.push(r));
+    const pending=assert.rejects(c.action({Action:"Events"},2000), AmiError);
+    if(reason==="socket_error") c.socket.emit("error",new Error("transport failed"));
+    else c.onData("X".repeat(1024*1024+100));
+    await pending; c.close(); await new Promise(r=>setTimeout(r,20));
+    assert.deepEqual(notifications,[reason]); assert.equal(c.waiters.length,0);assert.equal(c.isConnected,false);
+    unsub();
+  }
+});
+
+test("reentrant event unsubscribe and action dispatch preserve the other subscribers", async () => {
+  const {m,c}=await connectedMock(); const received=[]; let action; let delivered;
+  const delivery=new Promise(resolve=>{delivered=resolve;});
+  const unsub=c.subscribeEvents(()=>{unsub(); action=c.action({Action:"Events"}); delivered();});
+  c.subscribeEvents(e=>received.push(e.Event));
+  m.emitEvent({Event:"Newchannel"});
+  await delivery;
+  assert.equal((await action)[0].Response,"Success");
+  const hangup=new Promise(resolve=>{const stop=c.subscribeEvents(e=>{if(e.Event==="Hangup"){stop();resolve();}});});
+  m.emitEvent({Event:"Hangup"}); await hangup;
+  assert.deepEqual(received,["Newchannel","Hangup"]); assert.equal(c.waiters.length,0);
+});
+
+test("permanent holder abort rejects stalled callers, closes current and forbids retry", async () => {
+  const controller = new AbortController(); let creates = 0; let closes = 0; let resolve;
+  const get = lazyClient(() => { creates++; return { connect: () => new Promise(r => { resolve = r; }), close() { closes++; } }; }, () => true, controller.signal);
+  const a = get(); const b = get();
+  controller.abort();
+  await Promise.all([assert.rejects(a, /closed|cancel/i), assert.rejects(b, /closed|cancel/i)]);
+  resolve(); await new Promise(r => setImmediate(r));
+  await assert.rejects(get(), /closed|cancel/i);
+  assert.equal(creates, 1); assert.equal(closes, 1);
+});
+
+test("actual lazy holder second pass shares original observation deadline and later attempt is fresh", async () => {
+  const { CallObserver } = await import("../dist/call-observation.js");
+  const m=await mock({loginDelayMs:80}); let creates=0; const budgets=[]; const clients=[];
+  const factory=(deadline,signal)=>lazyClient(()=>{
+    const budget=deadline-performance.now(); budgets.push(budget);
+    const c=newClient(m,budget); clients.push(c); open.push(c); const connect=c.connect.bind(c); const id=++creates;
+    c.connect=async()=>{await connect(); if(id===1){ c.close(); m.loginDelayMs=1000; }};
+    return c;
+  },c=>c.isConnected,signal);
+  const observer=new CallObserver({name:"test",label:"test",host:"127.0.0.1",port:m.port},factory,200);
+  const began=performance.now(); await assert.rejects(observer.ensureReady()); const elapsed=performance.now()-began;
+  assert.equal(creates,2); assert.ok(budgets[1]<budgets[0]-50); assert.ok(elapsed<350,`elapsed ${elapsed}`);
+  await new Promise(r=>setTimeout(r,30)); assert.equal(m.sockets.size,0); assert.ok(clients.every(c=>!c.isConnected));
+  m.loginDelayMs=0; await observer.ensureReady(); assert.equal(creates,3); assert.equal(observer.coverage().ready,true); observer.close();
+});

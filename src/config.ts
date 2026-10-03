@@ -29,6 +29,8 @@ export interface Config {
   timeoutMs: number;
   /** Optional JSON file of named Asterisk targets (PBX_MCP_TARGETS_FILE). */
   targetsFile?: string;
+  /** Optional operator-owned immutable fixture expectations. */
+  fixtureExpectationsFile?: string;
   /** CIDRs an ad hoc (read-only) target IP must be inside (PBX_MCP_HOST_ALLOW). */
   hostAllow: string[];
   /** Ports an ad hoc target may use (PBX_MCP_ADHOC_PORTS, default 5038). */
@@ -87,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     contextAllow: list(env.PBX_MCP_CONTEXT_ALLOW),
     timeoutMs: num(env.PBX_MCP_TIMEOUT_MS, 10000),
     targetsFile: env.PBX_MCP_TARGETS_FILE?.trim() || undefined,
+    fixtureExpectationsFile: env.PBX_MCP_FIXTURE_EXPECTATIONS_FILE?.trim() || undefined,
     hostAllow: list(env.PBX_MCP_HOST_ALLOW),
     adhocPorts: list(env.PBX_MCP_ADHOC_PORTS).map(Number),
   };

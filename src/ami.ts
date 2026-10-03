@@ -26,6 +26,20 @@ export const MAX_AMI_BUFFER = 1024 * 1024;
 
 export class AmiError extends Error {}
 
+export interface AmiActionOptions {
+  maxMessages?: number;
+  rowEvent?: string;
+  maxRows?: number;
+  signal?: AbortSignal;
+}
+
+export type AmiLifecycleReason = "socket_closed" | "socket_error" | "input_buffer_failure" | "explicit_close";
+interface ActionWaiter {
+  actionId: string;
+  receive(msg: AmiMessage): void;
+  reject(err: AmiError): void;
+}
+
 export class AmiClient {
   private socket?: net.Socket;
   private buffer = "";
@@ -34,8 +48,35 @@ export class AmiClient {
   private closed = false;
   private greeting = "";
 
-  /** Resolvers waiting on a message, checked in order against each parsed message. */
-  private waiters: Array<(msg: AmiMessage) => boolean> = [];
+  /** Pending action collectors, routed exclusively by ActionID. */
+  private waiters: ActionWaiter[] = [];
+  private eventListeners = new Set<(msg: AmiMessage) => void>();
+  private lifecycleListeners = new Set<(reason: AmiLifecycleReason) => void>();
+  private lifecycleNotified = false;
+
+  subscribeEvents(listener: (msg: AmiMessage) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => { this.eventListeners.delete(listener); };
+  }
+
+  subscribeLifecycle(listener: (reason: AmiLifecycleReason) => void): () => void {
+    this.lifecycleListeners.add(listener);
+    return () => { this.lifecycleListeners.delete(listener); };
+  }
+
+  private disconnect(reason: AmiLifecycleReason): void {
+    this.connected = false;
+    this.closed = true;
+    const socket = this.socket;
+    this.socket = undefined;
+    this.buffer = "";
+    for (const waiter of [...this.waiters]) waiter.reject(new AmiError(`AMI connection closed: ${reason}`));
+    socket?.destroy();
+    if (!this.lifecycleNotified) {
+      this.lifecycleNotified = true;
+      for (const listener of [...this.lifecycleListeners]) listener(reason);
+    }
+  }
 
   constructor(private opts: AmiOptions) {}
 
@@ -53,6 +94,9 @@ export class AmiClient {
     const timeout = this.opts.timeoutMs ?? 10000;
     const deadline = Date.now() + timeout;
     this.closed = false;
+    this.lifecycleNotified = false;
+    this.buffer = "";
+    this.greeting = "";
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -63,6 +107,7 @@ export class AmiClient {
         }
       };
       const onUp = () => {
+        if (settled || this.closed) return;
         settled = true;
         resolve();
       };
@@ -75,12 +120,15 @@ export class AmiClient {
         socket.destroy();
         fail(new AmiError(`AMI connect timed out after ${timeout}ms`));
       });
-      socket.once("error", (err: Error) => fail(new AmiError(`AMI connect failed: ${err.message}`)));
+      socket.on("error", (err: Error) => {
+        fail(new AmiError(`AMI connect failed: ${err.message}`));
+        if (this.socket === socket) this.disconnect("socket_error");
+      });
       socket.setEncoding("utf8");
-      socket.on("data", (chunk: string) => this.onData(chunk));
+      socket.on("data", (chunk: string) => { if (this.socket === socket) this.onData(chunk); });
       socket.on("close", () => {
-        this.connected = false;
         fail(new AmiError("AMI connection closed before the connection was established"));
+        if (this.socket === socket) this.disconnect("socket_closed");
       });
       this.socket = socket;
     });
@@ -88,10 +136,6 @@ export class AmiClient {
     if (this.closed || !this.socket) throw new AmiError("AMI connection closed during connect");
     // Asterisk announces itself before accepting any action.
     this.socket.setTimeout(0);
-    this.socket!.removeAllListeners("error");
-    this.socket!.on("error", () => {
-      this.connected = false;
-    });
 
     try {
       // Connect and login share one budget of timeoutMs.
@@ -119,11 +163,7 @@ export class AmiClient {
   }
 
   close(): void {
-    this.connected = false;
-    this.closed = true;
-    this.socket?.destroy();
-    this.socket = undefined;
-    this.waiters = [];
+    this.disconnect("explicit_close");
   }
 
   private onData(chunk: string): void {
@@ -137,7 +177,7 @@ export class AmiClient {
     this.buffer += chunk;
     if (this.buffer.length > MAX_AMI_BUFFER) {
       this.buffer = "";
-      this.close();
+      this.disconnect("input_buffer_failure");
       return;
     }
 
@@ -150,12 +190,15 @@ export class AmiClient {
   }
 
   private dispatch(msg: AmiMessage): void {
-    for (let i = 0; i < this.waiters.length; i++) {
-      // A waiter returns true once it has everything it needs.
-      if (this.waiters[i](msg)) {
-        this.waiters.splice(i, 1);
-        return;
-      }
+    const waiter = this.waiters.find((w) => w.actionId === msg.ActionID);
+    if (waiter) {
+      waiter.receive(msg);
+      return;
+    }
+    // Action-tagged list rows (including late rows of a settled action) are not
+    // unsolicited call events and must never enter an observer's event stream.
+    if (msg.Event && !msg.ActionID) {
+      for (const listener of [...this.eventListeners]) listener(msg);
     }
   }
 
@@ -166,53 +209,64 @@ export class AmiClient {
    * with a Response message, then one event per row, then a "...Complete" event.
    * Everything with a matching ActionID is returned, Complete event included.
    */
-  async action(fields: AmiMessage, timeoutMs?: number): Promise<AmiMessage[]> {
-    if (!this.socket) throw new AmiError("AMI not connected");
+  async action(fields: AmiMessage, timeoutMs?: number, options: AmiActionOptions = {}): Promise<AmiMessage[]> {
+    const socket = this.socket;
+    if (!socket) throw new AmiError("AMI not connected");
+    if (options.signal?.aborted) throw new AmiError(`AMI action ${fields.Action} cancelled`);
 
     const actionId = `pbxmcp-${++this.actionSeq}-${Date.now()}`;
     const timeout = timeoutMs ?? this.opts.timeoutMs ?? 10000;
     const collected: AmiMessage[] = [];
+    let rows = 0;
 
-    const result = new Promise<AmiMessage[]>((resolve, reject) => {
-      const waiter = (msg: AmiMessage): boolean => {
-        if (msg.ActionID !== actionId) return false;
-        collected.push(msg);
-
-        const isError = (msg.Response ?? "").toLowerCase() === "error";
-        const isFinalEvent = /complete$/i.test(msg.Event ?? "");
-        // A Response with no EventList header is a single-shot reply.
-        const isLoneResponse =
-          msg.Response !== undefined && (msg.EventList ?? "").toLowerCase() !== "start";
-
-        if (isError || isFinalEvent || isLoneResponse) {
-          clearTimeout(timer);
-          resolve(collected);
-          return true;
-        }
-        return false;
-      };
-
-      const timer = setTimeout(() => {
+    return new Promise<AmiMessage[]>((resolve, reject) => {
+      let settled = false;
+      const finish = (err?: AmiError) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", cancel);
         this.waiters = this.waiters.filter((w) => w !== waiter);
-        // Anything collected means a list started and its Complete event never came:
-        // an incomplete list is an error, never a silently shortened answer.
-        if (collected.length) {
-          reject(new AmiError(`AMI action ${fields.Action} returned an incomplete list (no Complete event within ${timeout}ms)`));
-        } else {
-          reject(new AmiError(`AMI action ${fields.Action} timed out after ${timeout}ms`));
-        }
-      }, timeout);
-
+        if (err) reject(err); else resolve(collected);
+      };
+      const cancel = () => finish(new AmiError(`AMI action ${fields.Action} cancelled`));
+      const waiter: ActionWaiter = {
+        actionId,
+        reject: finish,
+        receive: (msg) => {
+          if (options.maxMessages !== undefined && collected.length >= options.maxMessages) {
+            finish(new AmiError(`AMI action ${fields.Action} exceeded maxMessages ${options.maxMessages}`));
+            return;
+          }
+          if (options.rowEvent && (msg.Event ?? "").toLowerCase() === options.rowEvent.toLowerCase()) {
+            rows++;
+            if (options.maxRows !== undefined && rows > options.maxRows) {
+              finish(new AmiError(`AMI action ${fields.Action} exceeded maxRows ${options.maxRows}`));
+              return;
+            }
+          }
+          collected.push(msg);
+          const isError = (msg.Response ?? "").toLowerCase() === "error";
+          const isFinalEvent = /complete$/i.test(msg.Event ?? "");
+          const isLoneResponse = msg.Response !== undefined && (msg.EventList ?? "").toLowerCase() !== "start";
+          if (isError || isFinalEvent || isLoneResponse) finish();
+        },
+      };
+      const timer = setTimeout(() => finish(new AmiError(collected.length
+        ? `AMI action ${fields.Action} returned an incomplete list (no Complete event within ${timeout}ms)`
+        : `AMI action ${fields.Action} timed out after ${timeout}ms`)), timeout);
       this.waiters.push(waiter);
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      const payload = Object.entries({ ...fields, ActionID: actionId })
+        .map(([k, v]) => `${k}: ${v}`).join("\r\n") + MSG_END;
+      try {
+        socket.write(payload, (err?: Error | null) => {
+          if (err) finish(new AmiError(`AMI action ${fields.Action} write failed: ${err.message}`));
+        });
+      } catch (err) {
+        finish(new AmiError(`AMI action ${fields.Action} write failed: ${(err as Error).message}`));
+      }
     });
-
-    const payload =
-      Object.entries({ ...fields, ActionID: actionId })
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\r\n") + MSG_END;
-
-    this.socket.write(payload);
-    return result;
   }
 
   /**
@@ -223,7 +277,12 @@ export class AmiClient {
     const msgs = await this.action({ Action: "Command", Command: cli }, timeoutMs);
     const first = msgs[0] ?? {};
     if ((first.Response ?? "").toLowerCase() === "error") {
-      throw new AmiError(first.Message ?? `Asterisk rejected: ${cli}`);
+      const message = first.Message?.trim();
+      const output = (first.Output ?? "").split("\n").filter((line) => line.trim()).join("\n");
+      // "Command output follows" is an envelope label, not the diagnostic.
+      const context = message && message.toLowerCase() !== "command output follows"
+        ? message : `Asterisk rejected: ${cli}`;
+      throw new AmiError(output ? `${context}\n${output}` : context);
     }
     // Asterisk 14+ returns the text in an "Output" key that repeats per line;
     // parseMessage folds repeats into one newline-joined value.

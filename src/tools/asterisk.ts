@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AmiClient, AmiError, listRows, type AmiMessage } from "../ami.js";
 import { assertNoHeaderInjection, checkAsteriskCommand, type Config } from "../config.js";
+import { CHANNEL_VARS, ENRICH_CHANNELS, enrichChannels } from "../channel-metadata.js";
 import { asTable, text, toolError } from "./format.js";
 
 /** What a tool needs to know about its target; a registry Snapshot satisfies it. */
@@ -20,59 +21,6 @@ export interface ToolTarget {
   host?: string;
   port?: number;
   dialplanHint?: string;
-}
-
-/** Channel columns that need one Getvar each (PJSIP channels only); Asterisk answers with the SIP header or id. */
-const CHANNEL_VARS: Array<[string, string]> = [
-  ["Call-ID", "CHANNEL(pjsip,call-id)"],
-  ["From", "PJSIP_HEADER(read,From)"],
-  ["To", "PJSIP_HEADER(read,To)"],
-  ["Diversion", "PJSIP_HEADER(read,Diversion)"],
-];
-const ENRICH_CHANNELS = 20;
-const ENRICH_CONCURRENCY = 8;
-
-const MAX_CELL_LEN = 128;
-function sanitizeCell(val: string): string {
-  const clean = val.replace(/[\r\n\x00-\x1f\x7f]/g, " ").trim();
-  return clean.length > MAX_CELL_LEN ? `${clean.slice(0, MAX_CELL_LEN - 3)}...` : clean;
-}
-
-/**
- * Fill Call-ID/From/To/Diversion on the first channels. Every failure (Getvar refused, no such
- * header, not a PJSIP channel, budget spent) leaves that cell unset, so it renders as n/a; this
- * never fails the tool. One extra timeoutMs budget is shared by all lookups.
- */
-async function enrichChannels(ami: AmiClient, rows: AmiMessage[], budgetMs: number): Promise<boolean> {
-  const deadline = Date.now() + budgetMs;
-  let spent = false;
-  const jobs: Array<() => Promise<void>> = [];
-  for (const row of rows.slice(0, ENRICH_CHANNELS)) {
-    if (!(row.Channel ?? "").startsWith("PJSIP/") || /[\r\n]/.test(row.Channel)) continue;
-    for (const [column, variable] of CHANNEL_VARS) {
-      jobs.push(async () => {
-        const left = deadline - Date.now();
-        if (left <= 0) {
-          spent = true;
-          return;
-        }
-        try {
-          const res = (await ami.action({ Action: "Getvar", Channel: row.Channel, Variable: variable }, left))[0] ?? {};
-          if ((res.Response ?? "").toLowerCase() === "success" && res.Value?.trim()) {
-            row[column] = sanitizeCell(res.Value);
-          }
-        } catch {
-          // Rendered as n/a; a lookup cut short by the shared budget is reported in a note.
-          if (Date.now() >= deadline - 5) spent = true;
-        }
-      });
-    }
-  }
-  const queue = [...jobs];
-  await Promise.all(Array.from({ length: ENRICH_CONCURRENCY }, async () => {
-    for (let job = queue.shift(); job; job = queue.shift()) await job();
-  }));
-  return spent;
 }
 
 /**

@@ -16,6 +16,7 @@ import { loadConfig } from "./config.js";
 import { lazyClient } from "./lazy-client.js";
 import { registerAsteriskTools } from "./tools/asterisk.js";
 import { registerProvisioningTools } from "./tools/provision.js";
+import { registerCallObservationTools } from "./tools/call-observation.js";
 import { registerTargetTools } from "./tools/targets.js";
 import { createRegistry } from "./targets.js";
 import { registerFreeswitchTools } from "./tools/freeswitch.js";
@@ -53,9 +54,12 @@ const server = new McpServer(
 
 if (registry.active) {
   registerAsteriskTools(server, cfg, registry.getClient, () => registry.snapshot());
+  registerCallObservationTools(server, cfg, () => registry.snapshot());
   if (cfg.allowProvision) registerProvisioningTools(server, cfg, registry.getClient, registry);
   if (cfg.targetsFile || cfg.hostAllow.length) registerTargetTools(server, registry);
 }
+
+const shutdownController = new AbortController();
 
 if (cfg.freeswitch) {
   const esl = cfg.freeswitch;
@@ -64,13 +68,29 @@ if (cfg.freeswitch) {
     cfg,
     lazyClient(
       () => new EslClient({ ...esl, timeoutMs: cfg.timeoutMs }),
-      (c) => c.isConnected
+      (c) => c.isConnected,
+      shutdownController.signal
     )
   );
 }
 
 const transport = new StdioServerTransport();
-await server.connect(transport);
+let shuttingDown = false;
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  registry.close();
+  shutdownController.abort();
+  await server.close();
+};
+server.server.onclose = () => { void shutdown(); };
+// The stdio SDK does not forward input EOF to its onclose callback.
+process.stdin.once("end", () => { void shutdown(); });
+process.stdin.once("close", () => { void shutdown(); });
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });
+try { await server.connect(transport); }
+catch (err) { await shutdown(); throw err; }
 
 console.error(
   `pbx-mcp ready (${[registry.active && "Asterisk", cfg.freeswitch && "FreeSWITCH"].filter(Boolean).join(" + ")}, ` +

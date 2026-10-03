@@ -186,6 +186,9 @@ Each `-e NAME` with no value forwards that variable from `env` into the containe
 | Tool | What it does |
 |---|---|
 | `asterisk_status` | Version, uptime, active calls and calls processed |
+| `asterisk_fixture_check` | Strict no-argument configured fixture checks plus acknowledged observer readiness; PASS does not prove SIP ingress or media |
+| `asterisk_wait_call` | Bounded exact Call-ID or original DID/context wait for one observed channel leg; explicit timeout, ambiguity and gap outcomes |
+| `asterisk_recent_calls` | Bounded retained terminal channel legs and coverage, including incomplete observations |
 | `asterisk_channels` | Every live channel with caller ID, state, bridge, duration and dialplan position. Optional substring filter |
 | `asterisk_endpoints` | PJSIP endpoints with device state and contact count. Falls back to `chan_sip` peers on older installs |
 | `asterisk_dialplan` | Dumps a context, or one extension inside a context |
@@ -390,3 +393,28 @@ Questions about the commercial products go through [the ICT Innovations support 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Bounded Asterisk call observation
+
+Use a configured named target or the environment-backed `default`; ad hoc addresses
+cannot create observers. Set `PBX_MCP_FIXTURE_EXPECTATIONS_FILE` to an operator-owned
+strict JSON file such as [asterisk-dev expectations](examples/asterisk-dev-expectations.json).
+Expectations are loaded once at startup and cannot be overridden by tool callers.
+All configured checks are required; refusal, timeout or unparsed evidence stays
+`UNKNOWN`, and a required mismatch is `FAIL` even with observation ready.
+
+The [asterisk-dev observation recipe](docs/asterisk.md#observing-asterisk-dev-calls)
+uses AMI `192.168.10.244:5038` and external SIP UDP `6060`: configure/select the target,
+require fixture `PASS` and `observationReady`, retain `observationSince`, establish
+separately authorized valid ingress, then run a separately authorized bounded external
+SIP test and wait using its exact full Call-ID and retained `since`. Recent-call
+inspection follows. The recorded fixture lacks valid PJSIP ingress; provisioning and
+actual calls remain separate prerequisites. Fixture checks do not change remote state.
+
+New tools return schemaVersion 1 structured `observed_ami` evidence for one
+`channel_leg`, with explicit nullable metadata, correlation, continuity, gaps and
+retention coverage. Wait uses an integer 1–300 second timeout (default 60); recent
+uses an integer 1–100 record limit (default 10). Observers retain at most 128 live
+legs and 256 terminal records with 16 concurrent waiters. Empty results do not prove
+historical zero calls. AMI answer/Hangup and Echo do not prove RTP/audio; local mock
+verification supplies no live SIP or media acceptance evidence.

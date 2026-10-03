@@ -10,8 +10,14 @@ The owner approved the [design spec](superpowers/specs/2026-10-03-asterisk-dev-c
 on 2026-10-03 and authorized a pseudocode-only plan with coordinator self-review.
 The [implementation plan](superpowers/plans/2026-10-03-asterisk-dev-call-observation.md)
 has coordinator self-review and fresh A2/B2 approval after A1/B1 revisions.
-Owner approval of the PLAN and runtime implementation remain pending.
-This handoff is a resume package, not permission to execute runtime work.
+The owner explicitly approved the PLAN and authorized runtime implementation in
+the execution session on 2026-10-03 at planning commit `f99b2ef`. Tasks 1–7 have
+fresh static/mock verification; final compatibility is 206 passed and two live
+tests skipped. Both wave reviews approved after one correlation-coverage fix
+round. Final graph status is tracked in the closeout artifact/session response.
+Remote
+configuration, provisioning, actual calls and new dependencies remain outside
+that authorization.
 
 ## Approved References and Context
 

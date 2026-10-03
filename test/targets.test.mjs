@@ -193,7 +193,7 @@ test("registry snapshot and identity expose the documented fields", async () => 
   assert.deepEqual(Object.keys(id).sort(), ["dialplanHint", "host", "label", "name", "port", "readOnly"]);
   assert.deepEqual(id, { name: "a", label: "A", host: "127.0.0.1", port: m.port, dialplanHint: "h", readOnly: true });
   const snap = r.snapshot();
-  assert.deepEqual(Object.keys(snap).sort(), ["dialplanHint", "getClient", "host", "label", "name", "port", "readOnly"]);
+  assert.deepEqual(Object.keys(snap).sort(), ["dialplanHint", "fixtureExpectation", "getClient", "getObserver", "host", "label", "name", "port", "readOnly"]);
   assert.equal(typeof snap.getClient, "function");
 });
 
@@ -696,4 +696,65 @@ test("CF-007: originate and hangup return isError true when AMI returns Error", 
   const h = await s.call("asterisk_hangup", { channel: "PJSIP/x" });
   assert.equal(h.isError, true);
   assert.match(text(h), /Error: Permission denied/);
+});
+
+test("named snapshots own shared observers, isolated histories and immutable expectations", async () => {
+  const a=await mock({channels:[]}); const b=await mock({channels:[]});
+  const expectations = writeTargets({targets:{a:{noActiveChannels:true}}});
+  const r=reg({PBX_MCP_TARGETS_FILE:writeTargets({targets:{a:entry(a),b:entry(b)}}),PBX_MCP_FIXTURE_EXPECTATIONS_FILE:expectations});
+  toClose.push(async()=>r.close()); r.select({name:"a"}); const snapshot=r.snapshot();
+  const observer=snapshot.getObserver(); assert.equal(snapshot.getObserver(),observer);
+  assert.equal(Object.isFrozen(snapshot.fixtureExpectation),true);
+  assert.equal(JSON.stringify(snapshot).includes(SECRET),false);
+  const ready=Promise.all([observer.ensureReady(),snapshot.getObserver().ensureReady()]);
+  r.select({name:"b"}); const second=r.snapshot().getObserver(); await ready; await second.ensureReady();
+  assert.equal(a.connections,1); assert.equal(b.connections,1); assert.notEqual(second,observer);
+  a.emitEvent({Event:"Newchannel",Uniqueid:"a1",Channel:"PJSIP/a-1"});
+  a.emitEvent({Event:"Hangup",Uniqueid:"a1",Channel:"PJSIP/a-1"});
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.equal((await observer.recentCalls({limit:10},performance.now()+1000)).records.length,1);
+  assert.equal((await second.recentCalls({limit:10},performance.now()+1000)).records.length,0);
+});
+const ENV = m => ({ASTERISK_AMI_HOST:"127.0.0.1",ASTERISK_AMI_PORT:String(m.port),ASTERISK_AMI_USERNAME:"mcp",ASTERISK_AMI_PASSWORD:"x"});
+
+test("default supports observation, ad hoc refuses without opening a socket, permanent close blocks snapshots", async () => {
+  const m=await mock();
+  const r=reg({...ENV(m),PBX_MCP_HOST_ALLOW:"127.0.0.0/8",PBX_MCP_ADHOC_PORTS:String(m.port)});
+  toClose.push(async()=>r.close());
+  const named=r.snapshot(); await named.getObserver().ensureReady(); const ordinary=await named.getClient();
+  r.select({host:"127.0.0.1",port:m.port}); const adhoc=r.snapshot();
+  const count=m.connections; assert.throws(()=>adhoc.getObserver(),/named_target_required/); assert.equal(m.connections,count);
+  r.close(); r.close(); assert.equal(ordinary.isConnected,false);
+  assert.throws(()=>named.getObserver(),/registry closed/); await assert.rejects(named.getClient(),/registry closed/);
+  assert.throws(()=>r.snapshot(),/registry closed/); assert.throws(()=>r.select({name:"default"}),/registry closed/);
+});
+test("registry close cancels login and prevents a late connection publishing", async () => {
+  const m=await mock({loginDelayMs:200}); const r=reg(ENV(m)); const snapshot=r.snapshot();
+  const pending=assert.rejects(snapshot.getClient(),/registry closed/); r.close(); await pending;
+  await new Promise(resolve=>setTimeout(resolve,250)); assert.equal(m.sockets.size,0);
+  await assert.rejects(snapshot.getClient(),/registry closed/); assert.ok(m.connections<=1);
+});
+
+test("observer failed reconnect retains terminal records and registry close cancels readiness", async () => {
+  const m=await mock(); const r=reg({...ENV(m),PBX_MCP_TIMEOUT_MS:"250"}); const observer=r.snapshot().getObserver();
+  toClose.push(async()=>r.close()); await observer.ensureReady();
+  m.emitEvent({Event:"Newchannel",Uniqueid:"retained",Channel:"PJSIP/a-1"});
+  m.emitEvent({Event:"Hangup",Uniqueid:"retained",Channel:"PJSIP/a-1"});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  for(const socket of m.sockets) socket.destroy(); await new Promise(resolve=>setTimeout(resolve,30));
+  m.rejectLogin=true; await assert.rejects(observer.ensureReady());
+  m.rejectLogin=false;
+  assert.equal((await observer.recentCalls({limit:10},performance.now()+500)).records[0].uniqueid,"retained");
+  for(const socket of m.sockets) socket.destroy(); await new Promise(resolve=>setTimeout(resolve,30));
+  m.loginDelayMs=1000; const cancelled=assert.rejects(observer.ensureReady());
+  r.close(); await cancelled; await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(m.sockets.size,0); await assert.rejects(observer.ensureReady());
+});
+
+test("expectation startup rejects unknown target and credential keys without input leakage", async () => {
+  const secret="expectation-secret-marker";
+  for(const data of [{targets:{[secret]:{}}},{targets:{default:{password:secret}}}]) {
+    const {status,stderr}=await startupFailure({ASTERISK_AMI_HOST:"127.0.0.1",PBX_MCP_FIXTURE_EXPECTATIONS_FILE:writeTargets(data)});
+    assert.equal(status,1); assert.match(stderr,/PBX_MCP_FIXTURE_EXPECTATIONS_FILE is invalid/); assert.doesNotMatch(stderr,new RegExp(secret));
+  }
 });

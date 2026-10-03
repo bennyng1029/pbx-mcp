@@ -178,3 +178,21 @@ test("CF-008: channel cells are capped and sanitized against injection", async (
   assert.ok(!out.includes("DROP ALL TABLES\n"), "newlines and injection text sanitized");
   assert.ok(out.includes("A".repeat(120) + "..."), "cell length capped to 128 chars");
 });
+
+test("dialplan Success remains exact and raw Error diagnostics retain tool isError", async () => {
+  const { h, m } = await setup();
+  for (const request of [{ context: "mcp-test" }, { context: "mcp-test", extension: "123" }]) {
+    const cli = request.extension ? "dialplan show 123@mcp-test" : "dialplan show mcp-test";
+    m.rawResponseFor[cli] = "Response: Success\r\nMessage: Command output follows\r\nOutput: existing context\r\nOutput: existing extension";
+    const success = await h.asterisk_dialplan(request);
+    assert.equal(success.isError, undefined);
+    assert.equal(body(success), "existing context\nexisting extension");
+    m.rawResponseFor[cli] = "Response: Error\r\nMessage: Command output follows\r\nOutput: There is no existence of context\r\nOutput: missing extension";
+    const missing = await h.asterisk_dialplan(request);
+    assert.equal(missing.isError, true);
+    assert.match(body(missing), /There is no existence of context\nmissing extension/);
+    m.rawResponseFor[cli] = "Response: Error\r\nMessage: Permission denied\r\nOutput: ";
+    const denied = await h.asterisk_dialplan(request);
+    assert.equal(denied.isError, true); assert.match(body(denied), /Permission denied/);
+  }
+});

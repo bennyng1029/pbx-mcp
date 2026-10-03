@@ -15,6 +15,12 @@ export function text(body: string, isError = false): ToolResult {
   return { content: [{ type: "text", text: body }], ...(isError ? { isError: true } : {}) };
 }
 
+/** Preserve raw evidence; only its human-readable rendering is sanitized. */
+export function structuredText(structuredContent: Record<string, unknown>, conciseBody: string, isError = false): ToolResult {
+  const clean = conciseBody.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, " ");
+  return { ...text(clamp(clean), isError), structuredContent };
+}
+
 export function toolError(err: unknown): ToolResult {
   const message = err instanceof Error ? err.message : String(err);
   return text(`Error: ${message}`, true);

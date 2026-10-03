@@ -16,6 +16,8 @@ export async function startMockAmi(seed = {}) {
     categories: (Array.isArray(seed) ? seed : Object.entries(seed).map(([name, vars]) => ({ name, vars }))), // names may repeat, like the real file
     failVerify: false, // make `pjsip show endpoint` claim nothing exists
     swallowNext: undefined, // an Action name: apply it, but never reply (once)
+    eventsBeforeReply: {}, // { Action: [event fields] }, sent before the action acknowledgement
+    actionDelayMs: {}, // delay a selected action independently
     delayMs: 0, // delay every reply, to expose interleaving
     sockets: new Set(),
     connections: 0, // sockets ever accepted
@@ -23,6 +25,9 @@ export async function startMockAmi(seed = {}) {
     loginDelayMs: 0, // delay only the Login reply
     rejectLogin: false, // answer Login with an Error
     errorFor: {}, // { Action: "message" } force an Error reply for that action
+    rawResponseFor: {}, // complete AMI envelopes keyed by Action or Command; receives request ActionID
+    unsolicitedBetweenRows: [], // events without ActionID, interleaved into list replies
+    closeFor: undefined, // close transport instead of answering this action
     omitComplete: false, // list actions send rows but never the ...Complete event
     channels: [], // CoreShowChannels rows: objects of AMI fields
     endpoints: undefined, // PJSIPShowEndpoints rows; undefined = module not loaded (Invalid/unknown command)
@@ -51,15 +56,19 @@ export async function startMockAmi(seed = {}) {
           if (c > 0) req[line.slice(0, c).trim()] = line.slice(c + 1).trim();
         }
         state.received.push(req);
-        const reply = respond(req, sock);
+        if (state.closeFor === req.Action) { sock.destroy(); continue; }
+        const reply = state.rawResponseFor[req.Command] ?? state.rawResponseFor[req.Action] ?? respond(req, sock);
         if (state.swallowNext === req.Action) {
           state.swallowNext = undefined;
           continue;
         }
-        const wait = state.delayMs + (req.Action === "Login" ? state.loginDelayMs : 0);
+        for (const fields of state.eventsBeforeReply[req.Action] ?? []) {
+          sock.write(Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n\r\n");
+        }
+        const wait = state.delayMs + (state.actionDelayMs[req.Action] ?? 0) + (req.Action === "Login" ? state.loginDelayMs : 0);
         setTimeout(() => {
           // Every message of the reply (a list is several) carries the request's ActionID.
-          if (!sock.destroyed) sock.write(reply.split("\r\n\r\n").map((m) => `${m}\r\nActionID: ${req.ActionID}`).join("\r\n\r\n") + "\r\n\r\n");
+          if (!sock.destroyed) sock.write(reply.split("\r\n\r\n").map((m) => m.startsWith("!unsolicited\r\n") ? m.slice(14) : `${m}\r\nActionID: ${req.ActionID}`).join("\r\n\r\n") + "\r\n\r\n");
         }, wait);
       }
     });
@@ -73,7 +82,10 @@ export async function startMockAmi(seed = {}) {
   /** A list reply: Response, one event per row (each its own message), then the Complete event. */
   const list = (listName, event, rows, complete) => {
     const msgs = [`Response: Success\r\nEventList: start\r\nMessage: ${listName} will follow`];
-    for (const r of rows) msgs.push(`Event: ${event}\r\n` + Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("\r\n"));
+    for (const [i, r] of rows.entries()) {
+      msgs.push(`Event: ${event}\r\n` + Object.entries(r).map(([k, v]) => `${k}: ${v}`).join("\r\n"));
+      if (state.unsolicitedBetweenRows[i]) msgs.push("!unsolicited\r\n" + state.unsolicitedBetweenRows[i]);
+    }
     if (!state.omitComplete) msgs.push(`Event: ${complete}\r\nEventList: Complete\r\nListItems: ${rows.length}`);
     return msgs.join("\r\n\r\n");
   };
@@ -86,6 +98,8 @@ export async function startMockAmi(seed = {}) {
         if (state.rejectLogin) return err("Authentication failed");
         sock.loggedIn = true;
         return out(["Response: Success", "Message: Authentication accepted"]);
+      case "Events":
+        return out(["Response: Success", "Message: Events On"]);
       case "CoreShowChannels":
         return list("channels", "CoreShowChannel", state.channels, "CoreShowChannelsComplete");
       case "PJSIPShowEndpoints":
@@ -165,6 +179,10 @@ export async function startMockAmi(seed = {}) {
     await new Promise((r) => server.close(r));
   };
   /** Requests after login, optionally filtered by Action. */
+  state.emitEvent = (fields) => {
+    const raw = Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join("\r\n") + "\r\n\r\n";
+    for (const sock of state.sockets) sock.write(raw);
+  };
   state.actions = (name) => state.received.filter((r) => r.Action !== "Login" && (!name || r.Action === name));
   return state;
 }
