@@ -6,9 +6,9 @@
   "0": {
    "title": "Baseline live verification of the shipped functions",
    "deps": [],
-   "status": "pending",
-   "updated": "2026-10-03T17:21:04",
-   "note": ""
+   "status": "done",
+   "updated": "2026-10-03T17:31:41",
+   "note": "lint+tests ok"
   },
   "1": {
    "title": "AMI reliability: shared connect, login-gated ready, bounded calls, no false empties",
