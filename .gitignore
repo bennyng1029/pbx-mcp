@@ -9,3 +9,7 @@ mcp-publisher.exe
 .env.local
 
 CLAUDE.md
+
+# Graphify
+graphify-out/
+**/graphify-out/
