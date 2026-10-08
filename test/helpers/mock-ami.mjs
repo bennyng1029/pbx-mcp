@@ -16,6 +16,7 @@ export async function startMockAmi(seed = {}) {
     categories: (Array.isArray(seed) ? seed : Object.entries(seed).map(([name, vars]) => ({ name, vars }))), // names may repeat, like the real file
     failVerify: false, // make `pjsip show endpoint` claim nothing exists
     swallowNext: undefined, // an Action name: apply it, but never reply (once)
+    dropNext: undefined, // an Action name: neither apply nor reply (once)
     delayMs: 0, // delay every reply, to expose interleaving
     sockets: new Set(),
   };
@@ -39,6 +40,10 @@ export async function startMockAmi(seed = {}) {
           if (c > 0) req[line.slice(0, c).trim()] = line.slice(c + 1).trim();
         }
         state.received.push(req);
+        if (state.dropNext === req.Action) {
+          state.dropNext = undefined;
+          continue;
+        }
         const reply = respond(req);
         if (state.swallowNext === req.Action) {
           state.swallowNext = undefined;

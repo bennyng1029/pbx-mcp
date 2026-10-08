@@ -106,7 +106,7 @@ write = command
 | `PBX_MCP_ALLOW_PROVISION` | `false` | Registers the six trunk and extension tools. Independent of `PBX_MCP_ALLOW_WRITE` |
 | `PBX_MCP_TRUNK_ALLOW` | *(unset)* | Comma-separated IPv4 CIDRs and hostnames a trunk may point at. **Unset means `asterisk_trunk_create` is refused** |
 | `PBX_MCP_CONTEXT_ALLOW` | *(unset)* | Comma-separated dialplan contexts new objects may use. Unset means every create is refused |
-| `PBX_MCP_PJSIP_FILE` | `pjsip_mcp.conf` | The one include file provisioning writes to. A bare `*.conf` name, never `pjsip.conf` |
+| `PBX_MCP_PJSIP_FILE` | `pjsip_mcp.conf` | The one include file provisioning writes to. A bare `pjsip_*.conf` name (never `pjsip.conf`, `manager.conf` or any other file) |
 
 ## Claude Desktop
 

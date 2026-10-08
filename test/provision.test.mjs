@@ -13,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { AmiClient } from "../dist/ami.js";
-import { Provisioner, assertSafeValue, updateConfigFields } from "../dist/provision.js";
+import { Provisioner, assertSafeValue, assertTrunkAllowed, updateConfigFields } from "../dist/provision.js";
 import { startMockAmi } from "./helpers/mock-ami.mjs";
 
 const FILE = "pjsip_mcp.conf";
@@ -113,8 +113,19 @@ test("trunk and extension inputs: each invalid field is rejected before any AMI 
 });
 
 test("the managed file can never be pjsip.conf or a path", () => {
-  for (const file of ["pjsip.conf", "PJSIP.CONF", "../pjsip.conf", "sub/x.conf", "x.txt"]) {
-    assert.throws(() => new Provisioner(async () => null, { ...OPTS, file }), /bare \*\.conf/, file);
+  for (const file of ["pjsip.conf", "PJSIP.CONF", "../pjsip.conf", "sub/x.conf", "x.txt", "manager.conf", "extensions.conf", "pjsip_.conf"]) {
+    assert.throws(() => new Provisioner(async () => null, { ...OPTS, file }), /bare pjsip_\*\.conf/, file);
+  }
+  assert.doesNotThrow(() => new Provisioner(async () => null, { ...OPTS, file: "pjsip_lab.conf" }));
+});
+
+test("a malformed PBX_MCP_TRUNK_ALLOW entry fails at startup, even behind a matching entry", () => {
+  for (const bad of ["192.0.2.0/33", "192.0.2.0/", "192.0.2.256/24"]) {
+    assert.throws(
+      () => new Provisioner(async () => null, { ...OPTS, trunkAllow: ["192.0.2.0/24", bad] }),
+      /PBX_MCP_TRUNK_ALLOW entry .* is not a valid IPv4 CIDR/,
+      bad
+    );
   }
 });
 
@@ -141,9 +152,8 @@ test("trunk allowlist: CIDR membership, bare IPs, literal hostnames, no DNS", as
   }
 });
 
-test("a malformed allowlist entry refuses rather than silently allowing", async () => {
-  const { prov } = await setup(undefined, { ...OPTS, trunkAllow: ["192.0.2.0/99"] });
-  await assert.rejects(prov.createTrunk(trunk({ dry_run: true })), /not a valid IPv4 CIDR/);
+test("a malformed allowlist entry refuses rather than silently allowing", () => {
+  assert.throws(() => assertTrunkAllowed("192.0.2.10", ["192.0.2.0/99"]), /not a valid IPv4 CIDR/);
 });
 
 test("context allowlist: unset refuses everything, others are rejected", async () => {
@@ -237,6 +247,7 @@ test("failed verification rolls back with DelCat and reports an error without th
   let message = "";
   await prov.createExtension(ext()).catch((e) => { message = e.message; });
   assert.match(message, /Verification failed.*Rolled back/s);
+  assert.match(message, /#include pjsip_mcp\.conf.*pjsip\.conf/s, "points at the include line");
   assert.equal(mock.categories.length, 0, "rollback removed every section");
   const dels = mock.actions("UpdateConfig").filter((u) => Object.values(u).includes("delcat"));
   assert.equal(dels.length, 1);
@@ -296,6 +307,17 @@ test("a create that times out after Asterisk applied it is rolled back", async (
   await assert.rejects(prov.createTrunk(trunk()), /timed out.*may have been applied.*Rolled back/s);
   assert.equal(mock.categories.length, 0);
   await prov.createTrunk(trunk()); // and a retry is not blocked by an orphan
+});
+
+test("a create that times out with nothing written says there is nothing to roll back", async () => {
+  const { mock, prov } = await setup();
+  mock.dropNext = "UpdateConfig";
+  await assert.rejects(prov.createTrunk(trunk()), (e) => {
+    assert.match(e.message, /timed out.*Nothing to roll back/s);
+    assert.doesNotMatch(e.message, /Rollback FAILED/);
+    return true;
+  });
+  assert.equal(mock.categories.length, 0);
 });
 
 test("a trunk and an extension cannot share a name", async () => {

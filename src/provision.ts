@@ -87,6 +87,13 @@ function inCidr(ip: string, entry: string): boolean {
   return Math.floor(ipv4ToInt(ip) / size) === Math.floor(ipv4ToInt(base) / size);
 }
 
+const looksLikeIp = (entry: string) => entry.includes("/") || IPV4.test(entry);
+
+/** Validate every entry up front, so a typo cannot hide behind an earlier entry that matched. */
+export function assertTrunkAllowList(allow: string[]): void {
+  for (const entry of allow) if (looksLikeIp(entry)) inCidr("0.0.0.0", entry);
+}
+
 /**
  * Fail closed: an empty allowlist refuses everything. Hostnames are matched
  * literally and never resolved, so DNS cannot be used to slip past the list.
@@ -97,8 +104,7 @@ export function assertTrunkAllowed(host: string, allow: string[]): void {
   }
   const isIp = IPV4.test(host);
   const permitted = allow.some((entry) => {
-    const looksLikeIp = entry.includes("/") || IPV4.test(entry);
-    if (looksLikeIp) return isIp && inCidr(host, entry);
+    if (looksLikeIp(entry)) return isIp && inCidr(host, entry);
     return !isIp && entry.toLowerCase() === host.toLowerCase();
   });
   if (!permitted) throw new Error(`Host "${host}" is not on the PBX_MCP_TRUNK_ALLOW list.`);
@@ -267,10 +273,12 @@ export class Provisioner {
     private getClient: () => Promise<AmiClient>,
     private opts: ProvisionOptions
   ) {
-    // pjsip.conf is hand-maintained; provisioning is confined to one include file beside it.
-    if (!/^[A-Za-z0-9_.-]+\.conf$/.test(opts.file) || opts.file.toLowerCase() === "pjsip.conf") {
-      throw new Error(`PBX_MCP_PJSIP_FILE "${opts.file}" must be a bare *.conf file name other than pjsip.conf.`);
+    // pjsip.conf is hand-maintained; provisioning is confined to one include file beside it. AMI `config`
+    // can write any file, so the name is limited to pjsip_*.conf (never manager.conf, extensions.conf, ...).
+    if (!/^pjsip_[A-Za-z0-9_.-]+\.conf$/i.test(opts.file)) {
+      throw new Error(`PBX_MCP_PJSIP_FILE "${opts.file}" must be a bare pjsip_*.conf file name (e.g. pjsip_mcp.conf).`);
     }
+    assertTrunkAllowList(opts.trunkAllow);
   }
 
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -313,6 +321,8 @@ export class Provisioner {
 
     const rollback = async () => {
       try {
+        const names = new Set(sections.map((s) => s.name));
+        if (!(await this.categories(ami)).some((c) => names.has(c.name))) return "Nothing to roll back; nothing was written.";
         await this.update(ami, deleteOps(sections.map((s) => ({ name: s.name, type: typeOf(s) }))));
         await this.reload(ami);
         return "Rolled back.";
@@ -335,7 +345,10 @@ export class Provisioner {
       shown = await ami.command(`pjsip show endpoint ${id}`);
       if (!endpointExists(shown, id)) throw new Error(`Asterisk does not report endpoint ${id} after reload.`);
     } catch (err) {
-      throw new Error(`Verification failed: ${(err as Error).message} ${await rollback()}`);
+      throw new Error(
+        `Verification failed: ${(err as Error).message} ${await rollback()} ` +
+          `Is "#include ${this.opts.file}" present in pjsip.conf, and does Asterisk have write access to ${this.opts.file}?`
+      );
     }
     return { verified: secret ? shown.split(secret).join("***") : shown, config };
   }
