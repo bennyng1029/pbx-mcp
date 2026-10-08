@@ -48,4 +48,4 @@ All new functional acceptance is deterministic in-process, loopback AMI or SDK v
 
 ## Graph maintenance
 
-Planned-last: `graphify update .` is available and expected, and is scheduled as the final repository-affecting operation after reviews and closeout artifact consistency checking. Actual status will be reported in the final response without subsequent repository mutations. This field deliberately records the planned-last status rather than claiming success before execution.
+`graphify update .` ran on 2026-10-08 after final `npm test` (208 total, 206 passed, 2 opt-in live skips, 0 failures); graph updated. Branch merged to `main` and pushed on 2026-10-08 with owner authorization. Live SIP ingress and RTP/audio remain unverified.
